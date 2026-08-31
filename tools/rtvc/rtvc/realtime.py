@@ -47,10 +47,21 @@ from typing import Optional
 import numpy as np
 
 from .dsp import HighPass, NoiseGate, SoftLimiter, equal_power_windows
-from .engines import BaseEngine, build_engine
+from .engines import RVC_GRID_MS, BaseEngine, build_engine, check_rvc_grid
+from .timing import HighResolutionTimer
 
-__all__ = ["WindowProcessor", "RealtimeSession", "LatencyReport",
+__all__ = ["WindowProcessor", "RealtimeSession", "LatencyReport", "StreamDead",
            "run_offline", "build_parser", "main"]
+
+
+class StreamDead(RuntimeError):
+    """The stream opened but is not delivering audio.
+
+    WASAPI exclusive mode can fail this way: ``start()`` returns, no exception
+    is raised, and the callback is simply never invoked.  Every counter then
+    stays at zero, which reads as a perfect run -- the most dangerous possible
+    way to be broken.
+    """
 
 
 # ---------------------------------------------------------------------------
@@ -127,7 +138,10 @@ class WindowProcessor:
             self.gate.reset()
 
     def warmup(self, iters: int = 8) -> None:
-        self.engine.warmup(self.window_len, self.sr, iters=iters)
+        # Same window length *and* same tail as the live loop, or the
+        # one-off costs warmup exists to absorb simply happen again.
+        self.engine.warmup(self.window_len, self.sr, iters=iters,
+                           tail=self.crossfade + self.block)
 
     # -- the loop body ------------------------------------------------------
     def process_block(self, block: np.ndarray) -> np.ndarray:
@@ -145,9 +159,10 @@ class WindowProcessor:
         if self._hist.size:
             self._hist = window[-self._hist.size:].copy()
 
-        converted = self.engine.convert(window, self.sr)
-
         keep = self.crossfade + self.block
+        # Only the last X+B samples are ever used, so tell the engine that.
+        # A vocoder that honours it synthesises 40ms instead of 140ms.
+        converted = self.engine.convert(window, self.sr, tail=keep)
         tail = converted[-keep:]
 
         if self.crossfade == 0:
@@ -279,6 +294,23 @@ class RealtimeSession:
         )
 
     # -- lifecycle ----------------------------------------------------------
+    def _assert_alive(self, deadline_s: float = 1.5) -> None:
+        """Fail loudly if the device never calls back.
+
+        Checked before anything is reported, because a silent stream produces
+        a table full of zeros that looks like a flawless run.
+        """
+        end = time.perf_counter() + deadline_s
+        while time.perf_counter() < end:
+            if self.io.stats.callbacks > 0:
+                return
+            time.sleep(0.02)
+        raise StreamDead(
+            f"the stream opened but delivered no audio in {deadline_s:.1f}s "
+            "(callback count is still 0). The device accepted the format and "
+            "then did nothing."
+        )
+
     def run(self, duration: float = 0.0) -> None:
         self.io.counting = False
         self.io.start()
@@ -287,10 +319,20 @@ class RealtimeSession:
         self._worker.start()
         started = time.perf_counter()
         next_report = started + self.report_sec
+        last_callbacks = 0
         try:
+            self._assert_alive()
             while not self._stop.is_set():
                 now = time.perf_counter()
                 if now >= next_report:
+                    seen = self.io.stats.callbacks
+                    if seen == last_callbacks:
+                        raise StreamDead(
+                            f"the stream stopped calling back after {seen} callbacks "
+                            f"({now - started:.1f}s in); the numbers below this point "
+                            "would be meaningless"
+                        )
+                    last_callbacks = seen
                     report = self.snapshot(now - started)
                     print(report.line(), flush=True)
                     self.reports.put(report)
@@ -447,18 +489,34 @@ def build_parser() -> argparse.ArgumentParser:
     dev.add_argument("--exclusive", action="store_true",
                      help="request WASAPI exclusive mode (Windows only)")
 
+    # Left as None so "the user typed the default value" is distinguishable
+    # from "the user typed nothing" -- the RVC window depends on that.
     win = p.add_argument_group("window")
-    win.add_argument("--block-ms", type=float, default=32.0, help="B: new audio per window")
-    win.add_argument("--crossfade-ms", type=float, default=8.0, help="X: crossfade length")
-    win.add_argument("--extra-ms", type=float, default=500.0,
-                     help="EXTRA: past context; costs compute, not latency")
+    win.add_argument("--block-ms", type=float, default=None,
+                     help="B: new audio per window (default: 32, or 30 for --engine rvc)")
+    win.add_argument("--crossfade-ms", type=float, default=None,
+                     help="X: crossfade length (default: 8, or 10 for --engine rvc)")
+    win.add_argument("--extra-ms", type=float, default=None,
+                     help="EXTRA: past context; costs compute, not latency "
+                          "(default: 500, or 100 for --engine rvc)")
 
     eng = p.add_argument_group("engine")
-    eng.add_argument("--engine", default="passthrough", choices=("passthrough", "fixed"),
+    eng.add_argument("--engine", default="passthrough",
+                     choices=("passthrough", "fixed", "rvc"),
                      help="conversion engine")
     eng.add_argument("--fixed-cost-ms", type=float, default=25.0,
                      help="simulated inference cost for --engine fixed")
     eng.add_argument("--warmup", type=int, default=8, help="warmup iterations before going live")
+
+    rvc = p.add_argument_group("rvc (only with --engine rvc)")
+    rvc.add_argument("--rvc-root", default=None, help="path to the RVC checkout")
+    rvc.add_argument("--rvc-model", default=None, help="speaker .pth (default: the only one found)")
+    rvc.add_argument("--rvc-index", default=None, help="faiss .index file")
+    rvc.add_argument("--rvc-index-rate", type=float, default=0.0,
+                     help="faiss blend; searching every block is expensive, start at 0")
+    rvc.add_argument("--rvc-key", type=int, default=0, help="pitch shift in semitones")
+    rvc.add_argument("--f0-method", default="rmvpe", choices=("rmvpe", "fcpe"),
+                     help="harvest/crepe are not realtime-capable and are not offered")
 
     dsp = p.add_argument_group("dsp")
     dsp.add_argument("--no-gate", action="store_true", help="disable the noise gate")
@@ -505,15 +563,65 @@ def main(argv: Optional[list] = None) -> int:
         return 0
 
     sr = args.sr
-    block = max(1, int(round(sr * args.block_ms / 1000.0)))
-    crossfade = int(round(sr * args.crossfade_ms / 1000.0))
-    extra = int(round(sr * args.extra_ms / 1000.0))
+    # RVC counts in 10ms units, so it gets a different default window. B+X is
+    # 40ms either way, so the algorithmic latency is unchanged.
+    is_rvc = args.engine == "rvc"
+    fallback = (30.0, 10.0, 100.0) if is_rvc else (32.0, 8.0, 500.0)
+    block_ms = fallback[0] if args.block_ms is None else args.block_ms
+    crossfade_ms = fallback[1] if args.crossfade_ms is None else args.crossfade_ms
+    extra_ms = fallback[2] if args.extra_ms is None else args.extra_ms
+
+    if is_rvc:
+        try:
+            check_rvc_grid(block_ms=block_ms, crossfade_ms=crossfade_ms, extra_ms=extra_ms)
+        except ValueError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 2
+
+    block = max(1, int(round(sr * block_ms / 1000.0)))
+    crossfade = int(round(sr * crossfade_ms / 1000.0))
+    extra = int(round(sr * extra_ms / 1000.0))
     if crossfade > block:
-        print(f"error: --crossfade-ms ({args.crossfade_ms}) must not exceed "
-              f"--block-ms ({args.block_ms})", file=sys.stderr)
+        print(f"error: --crossfade-ms ({crossfade_ms}) must not exceed "
+              f"--block-ms ({block_ms})", file=sys.stderr)
         return 2
 
-    engine = build_engine(args.engine, sr, fixed_cost_ms=args.fixed_cost_ms)
+    # Raised for the whole run, warmup included: at Windows' default ~15.6ms
+    # tick a 30ms warmup measures 33-37ms, and the pre-roll sized from it is
+    # far too large. See rtvc/timing.py.
+    clock = HighResolutionTimer()
+    clock.start()
+    try:
+        return _run(args, sr, block, crossfade, extra, clock)
+    finally:
+        clock.stop()
+
+
+def _run(args, sr, block, crossfade, extra, clock) -> int:
+    if args.engine == "rvc":
+        try:
+            from .rvc_backend import build_rvc_engine
+        except ImportError:
+            print(
+                "error: --engine rvc needs rtvc/rvc_backend.py, which is not in this "
+                "checkout.\n"
+                "  It must expose:\n"
+                "      build_rvc_engine(args, sr, block, crossfade, extra) -> RVCTorchEngine\n"
+                "  and hand RVCTorchEngine a callable shaped either\n"
+                "      infer_fn(wav16k)                              -> audio at model_sr\n"
+                "      infer_fn(wav16k, skip_head, return_length)    -> audio at model_sr\n"
+                "  with skip_head/return_length in 16 kHz SAMPLES (divide by 160 for\n"
+                "  RVC's zc units), and torch.cuda.synchronize() before returning.\n"
+                "  See docs/RVC_INTEGRATION.md.",
+                file=sys.stderr)
+            return 4
+        try:
+            engine = build_rvc_engine(args, sr, block, crossfade, extra)
+        except (RuntimeError, FileNotFoundError) as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 4
+    else:
+        engine = build_engine(args.engine, sr, fixed_cost_ms=args.fixed_cost_ms)
     proc = WindowProcessor(
         engine, sr, block, crossfade, extra,
         highpass=not args.no_highpass,
@@ -529,6 +637,7 @@ def main(argv: Optional[list] = None) -> int:
           f"{proc.algorithmic_latency_ms:.2f}ms | gate "
           f"{'off' if args.no_gate else 'on'} | hp "
           f"{'off' if args.no_highpass else 'on'}")
+    print(clock.describe())
 
     proc.warmup(args.warmup)
 
@@ -567,11 +676,15 @@ def main(argv: Optional[list] = None) -> int:
     print("running -- Ctrl+C to stop")
     try:
         session.run(duration=args.duration)
-    except RuntimeError as exc:
+    except StreamDead as exc:
         print(f"error: {exc}", file=sys.stderr)
         if args.exclusive:
-            print("hint: WASAPI exclusive mode was requested. Try one side at a "
-                  "time to find which device refuses it.", file=sys.stderr)
+            print("hint: exclusive mode fails silently on some devices -- the stream "
+                  "opens and never calls back. Open one side at a time to find which "
+                  "device refuses it.", file=sys.stderr)
+        return 3
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
         return 3
     return 0
 

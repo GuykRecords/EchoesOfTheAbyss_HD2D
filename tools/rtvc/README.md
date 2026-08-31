@@ -27,9 +27,16 @@ python realtime.py --engine passthrough --in-device 23 --out-device 22 --sr 4800
 # 「25ms かかるモデル」を載せた想定での耐久テスト
 python realtime.py --engine fixed --fixed-cost-ms 25 --in-device 23 --out-device 22 --sr 48000 --io-block 128 --block-ms 32 --crossfade-ms 8
 
-# WASAPI 排他モード（デバイス側の遅延を削る）
-python realtime.py --engine passthrough --in-device 23 --out-device 22 --sr 48000 --io-block 128 --block-ms 32 --crossfade-ms 8 --exclusive
+# RVC（窓は自動で 30/10/100 に切り替わる）
+python realtime.py --engine rvc --in-device 23 --out-device 22 --sr 48000 --io-block 128 --rvc-root D:\Claude\Project\RVC --rvc-model <話者>.pth
 ```
+
+| 終了コード | 意味 |
+|---|---|
+| 0 | 正常終了 |
+| 2 | 窓の指定が不正（10ms グリッド違反、X > B など） |
+| 3 | ストリームが開いたのに音が流れない／途中で止まった |
+| 4 | RVC の初期化に失敗（`.pth` が無い等） |
 
 10 秒ほど動かして `Ctrl+C`。終了時にサマリが出る。
 
@@ -70,14 +77,19 @@ python realtime.py --offline --offline-input voice.wav --offline-out converted.w
 それ以前は出力リングが空なのが当たり前で、そこを数えると `under` は
 **構造上ゼロになれない数字**になり、合否判定に使えなくなる。
 
-### 実測ベースライン（RTX 4070 / i7-14700 / Win11、passthrough, B32 / X8 / io-block 128）
+### 実測ベースライン（RTX 4070 / i7-14700 / Win11、WASAPI 共有、io-block 128）
 
-```
-TOTAL 94.67ms = in-dev 22.00 + block 32.00 + infer 0 + xfade 8.00 + out-buf 8.00 + out-dev 24.67
-under/over/drop すべて 0、worker loop ema 0.278ms
-```
+| 構成 | TOTAL | RTF | under/over/drop |
+|---|---|---|---|
+| passthrough B32 / X8 | 94.67 ms | 0.01 | 0 / 0 / 0 |
+| fixed 25ms B32 / X8 | 126.00 ms | 0.79 | 0 / 0 / 0 |
+| fixed 25ms B30 / X10 / EXTRA100（RVC 互換窓） | 122.70 ms | 0.85 | 0 / 0 / 0 |
 
-デバイス側（in-dev + out-dev = 46.67ms）が全体の半分。**ここが最大の削りどころ。**
+デバイス側（in-dev 22.00 + out-dev 24.67 = **46.67ms**）が全体の半分。
+
+**WASAPI 排他モードは検証済みで、改善しないことが確定している**
+（ワイヤレスの INZONE Buds が排他入力で +6.42% のレート破綻を起こす）。
+→ [`docs/HANDOVER.md`](docs/HANDOVER.md) 。**再計測しないこと。**
 
 ---
 
@@ -93,7 +105,7 @@ under/over/drop すべて 0、worker loop ema 0.278ms
        遅延に効かない / 計算量に効く    遅延に効く   遅延に効く
 ```
 
-* `EXTRA`（`--extra-ms`, 既定 500ms）… すでに過ぎた音。モデルに文脈を与えるが**遅延はゼロ**。計算量だけ増える。
+* `EXTRA`（`--extra-ms`, 既定 500ms / RVC では 100ms）… すでに過ぎた音。モデルに文脈を与えるが**遅延はゼロ**。計算量だけ増える。
 * `X`（`--crossfade-ms`）… 前回の出力と重ねて繋ぐ区間。
 * `B`（`--block-ms`）… 今回新しく入ってきた音。
 
@@ -111,7 +123,16 @@ under/over/drop すべて 0、worker loop ema 0.278ms
 等パワー窓（cos / sin）で混ぜて繋ぐ。混ぜ終わった残りの `X` を次回用に取っておく。
 
 > passthrough で聴くとクロスフェード区間だけ +3dB 大きくなる。
-> 同じ信号を等パワーで混ぜれば √2 倍になるので、これは**原理どおりの正常動作**。
+> 同じ信号を等パワーで混ぜれば √2 倍になるので、これは**原理どおりの正常動作**
+> （実測 0.207 = 0.5×(√2−1) と解析値が一致）。
+
+### エンジンには「末尾だけ」を頼む
+
+ループが実際に使うのは末尾 `X + B` だけなので、`convert()` は `tail` を渡す。
+これを尊重できるエンジン（`supports_tail = True`）は合成量を
+**窓 140ms → 末尾 40ms** に削れる。RVC の vocoder で実測**約 3.4 倍**の差になる。
+
+出力音は 1 サンプルも変わらない。変わっていないことはテストで担保している。
 
 ---
 
@@ -128,6 +149,12 @@ under/over/drop すべて 0、worker loop ema 0.278ms
 5. **`EXTRA` は遅延に数えない。** 過去の音だから。
 6. **リングバッファが溢れたら古い方を捨てる。** 新しい方を捨てると
    バックログの後ろで詰まり続け、二度とリアルタイムに戻れない。
+7. **`under` / `over` は最初の変換完了後から数える。** それ以前は出力リングが空なのが
+   当たり前で、数えると `under` が構造上ゼロになれず合否判定に使えなくなる。
+8. **ストリームが開いたことを成功と見なさない。** コールバックが来ているかを確認する。
+   排他モードは「開くが 1 度も呼ばれない」形で静かに失敗し、全カウンタ 0 ＝ 満点に見える。
+9. **Windows では `timeBeginPeriod(1)` を自前で握る。** PortAudio はストリームを
+   開いている間しか上げないので、その前に走る warmup が粗いクロックで測られる。
 
 ---
 
@@ -139,6 +166,7 @@ under/over/drop すべて 0、worker loop ema 0.278ms
 | `rtvc/audio_io.py` | `RingBuffer`（ロック付き・古い方を捨てる） / `AudioIO`（duplex 1 本） |
 | `rtvc/engines.py` | `BaseEngine`（EMA 計測・warmup） / `PassthroughEngine` / `FixedCostEngine` / `RVCTorchEngine` |
 | `rtvc/realtime.py` | `WindowProcessor`（窓とクロスフェード） / `RealtimeSession`（スレッド） / `run_offline` / CLI |
+| `rtvc/timing.py` | Windows のスケジューラ刻みを 1ms に上げる（既定 ~15.6ms では warmup が測れない） |
 | `realtime.py` | 上を呼ぶだけのランチャ。`python realtime.py ...` がそのまま動く |
 | `tests/` | 音声デバイス無しで回る受け入れテスト |
 
@@ -154,11 +182,13 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-67 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
+82 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
 （`.github/workflows/rtvc-tests.yml`）。
 
-うち 6 件（`tests/test_session.py`）は、PortAudio のコールバックを偽のフィーダから
+うち 9 件（`tests/test_session.py`）は、PortAudio のコールバックを偽のフィーダから
 呼ぶことで**ワーカースレッドと遅延計測そのもの**を実機なしで動かしている。
+「ストリームは開いたのにコールバックが 1 度も来ない」（排他モードのサイレント失敗）を
+検出できることも、ここで回帰テストしている。
 
 中心になるのは `test_passthrough_output_matches_the_exact_oracle`。
 passthrough なら出力は「入力を X だけ遅らせて、ブロック境界の X サンプルに

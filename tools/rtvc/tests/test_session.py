@@ -172,3 +172,67 @@ def test_worker_stops_promptly_when_the_session_stops():
     calls = session.proc.engine.calls
     time.sleep(0.15)
     assert session.proc.engine.calls == calls, "worker kept running after stop()"
+
+
+# --------------------------------------------------------------------------
+# A stream that opens and then does nothing
+# --------------------------------------------------------------------------
+
+
+class DeadIO(FakeIO):
+    """Opens successfully and never calls back -- how exclusive mode fails."""
+
+    def _feed(self):
+        while self._feeding.is_set():
+            time.sleep(0.01)
+
+
+class StallingIO(FakeIO):
+    """Runs briefly, then stops calling back with no error."""
+
+    def __init__(self, stall_after=40, **kwargs):
+        super().__init__(**kwargs)
+        self.stall_after = stall_after
+
+    def _feed(self):
+        period = self.blocksize / self.sr
+        rng = np.random.default_rng(0)
+        while self._feeding.is_set():
+            if self.stats.callbacks < self.stall_after:
+                indata = (rng.standard_normal(self.blocksize) * 0.05).astype(np.float32)
+                outdata = np.zeros(self.blocksize, dtype=np.float32)
+                self._callback(indata, outdata, self.blocksize, None, FakeStatus())
+            time.sleep(period)
+
+
+def test_a_silent_stream_is_an_error_not_a_perfect_score():
+    """The most dangerous failure: every counter reads 0, which looks flawless."""
+    from rtvc.realtime import StreamDead
+
+    proc = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA)
+    session = RealtimeSession(proc, DeadIO(), report_sec=0.25)
+    with pytest.raises(StreamDead, match="no audio"):
+        session.run(duration=3.0)
+    assert session.io.stats.callbacks == 0
+    assert session.io.stats.underflow == 0, (
+        "counters stayed at zero -- exactly why the callback count has to be checked"
+    )
+
+
+def test_a_stream_that_stops_midway_is_caught():
+    from rtvc.realtime import StreamDead
+
+    proc = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA)
+    session = RealtimeSession(proc, StallingIO(stall_after=40), report_sec=0.3)
+    with pytest.raises(StreamDead, match="stopped calling back"):
+        session.run(duration=5.0)
+
+
+def test_high_resolution_timer_is_safe_to_use_anywhere():
+    from rtvc.timing import HighResolutionTimer
+
+    with HighResolutionTimer() as clock:
+        described = clock.describe()
+    assert not clock.active, "timeEndPeriod must be paired with timeBeginPeriod"
+    assert "scheduler timer" in described
+    clock.stop()  # idempotent

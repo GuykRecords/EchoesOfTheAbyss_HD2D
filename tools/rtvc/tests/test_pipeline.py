@@ -20,6 +20,7 @@ from rtvc.engines import (
     PassthroughEngine,
     RVCTorchEngine,
     build_engine,
+    check_rvc_grid,
 )
 from rtvc.realtime import WindowProcessor, build_parser, main, run_offline
 
@@ -151,8 +152,117 @@ def test_engine_tracks_peak_separately_from_the_average():
 
 def test_engine_rejects_a_length_changing_conversion():
     eng = CallableEngine(lambda w, sr: w[:-1])
-    with pytest.raises(ValueError, match="length preserving"):
+    with pytest.raises(ValueError, match="expected 128"):
         eng.convert(np.zeros(128, dtype=np.float32), SR)
+
+
+# --------------------------------------------------------------------------
+# The tail contract
+# --------------------------------------------------------------------------
+
+
+def test_an_engine_that_supports_tail_returns_only_the_tail():
+    """Synthesising 40ms instead of 140ms is where the ~3.4x saving lives."""
+    eng = PassthroughEngine()
+    assert eng.supports_tail
+    window = np.arange(1000, dtype=np.float32)
+    out = eng.convert(window, SR, tail=100)
+    assert out.size == 100
+    assert np.array_equal(out, window[-100:])
+
+
+def test_an_engine_without_tail_support_still_gets_the_whole_window():
+    """`tail` is a hint, not a requirement; old engines keep working."""
+    eng = CallableEngine(lambda w, sr: w)
+    assert not eng.supports_tail
+    out = eng.convert(np.zeros(1000, dtype=np.float32), SR, tail=100)
+    assert out.size == 1000, "a tail-unaware engine must not be asked to shorten"
+
+
+def test_tail_support_does_not_change_a_single_output_sample():
+    """The optimisation must be invisible in the audio, or it is not an optimisation."""
+    rng = np.random.default_rng(5)
+    blocks = [rng.standard_normal(B).astype(np.float32) * 0.2 for _ in range(8)]
+
+    with_tail = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA,
+                                highpass=False, gate=False, limiter=False)
+    without = WindowProcessor(CallableEngine(lambda w, sr: w), SR, B, X, EXTRA,
+                              highpass=False, gate=False, limiter=False)
+    assert with_tail.engine.supports_tail and not without.engine.supports_tail
+
+    for block in blocks:
+        assert np.array_equal(with_tail.process_block(block), without.process_block(block))
+
+
+def test_warmup_uses_the_same_tail_as_the_live_loop():
+    """A different tail re-triggers the one-off costs warmup exists to absorb."""
+    seen = []
+
+    class Recorder(PassthroughEngine):
+        def _convert(self, window, sr, tail=None):
+            seen.append((window.size, tail))
+            return super()._convert(window, sr, tail)
+
+    proc = WindowProcessor(Recorder(), SR, B, X, EXTRA,
+                           highpass=False, gate=False, limiter=False)
+    proc.warmup(iters=2)
+    proc.process_block(np.zeros(B, dtype=np.float32))
+    assert len(set(seen)) == 1, f"warmup and live shapes differ: {set(seen)}"
+    assert seen[0] == (EXTRA + X + B, X + B)
+
+
+# --------------------------------------------------------------------------
+# RVC's 10 ms grid
+# --------------------------------------------------------------------------
+
+
+def test_rvc_grid_rejects_the_passthrough_baseline_window():
+    """32/8 is fine for measurement and impossible for RVC. Fail at startup."""
+    with pytest.raises(ValueError, match="10ms grid"):
+        check_rvc_grid(block_ms=32.0, crossfade_ms=8.0, extra_ms=500.0)
+
+
+def test_rvc_grid_accepts_the_known_good_window():
+    check_rvc_grid(block_ms=30.0, crossfade_ms=10.0, extra_ms=100.0)
+
+
+def test_rvc_engine_refuses_an_off_grid_window_at_construction():
+    with pytest.raises(ValueError, match="10ms grid"):
+        RVCTorchEngine(lambda w: w, stream_sr=SR, block_ms=32.0,
+                       crossfade_ms=8.0, extra_ms=500.0)
+
+
+def test_rvc_engine_detects_a_tail_aware_backend_and_passes_16k_units():
+    """skip_head/return_length go out in 16 kHz samples; unit conversion is the backend's job."""
+    calls = []
+
+    def tail_aware(wav16k, skip_head, return_length):
+        calls.append((wav16k.size, skip_head, return_length))
+        return np.zeros(int(return_length * 40000 / 16000), dtype=np.float32)
+
+    eng = RVCTorchEngine(tail_aware, stream_sr=48000, model_sr=48000,
+                         block_ms=30.0, crossfade_ms=10.0, extra_ms=100.0)
+    assert eng.tail_aware
+
+    window = np.zeros(int(48000 * 0.140), dtype=np.float32)   # 140 ms
+    out = eng.convert(window, 48000, tail=int(48000 * 0.040))  # keep 40 ms
+    assert out.size == int(48000 * 0.040)
+
+    wav_len, skip, ret = calls[-1]
+    assert wav_len == 2240          # 140 ms at 16 kHz
+    assert ret == 640               # 40 ms at 16 kHz
+    assert skip == wav_len - ret
+    assert ret % 160 == 0, "return_length must land on RVC's 10ms (zc=160) grid"
+
+
+def test_rvc_engine_still_accepts_a_one_argument_backend():
+    """The simple shape keeps working; the engine slices the tail itself."""
+    def simple(wav16k):
+        return np.zeros(int(wav16k.size * 48000 / 16000), dtype=np.float32)
+
+    eng = RVCTorchEngine(simple, stream_sr=48000, model_sr=48000)
+    assert not eng.tail_aware
+    assert eng.convert(np.zeros(6720, dtype=np.float32), 48000, tail=1920).size == 1920
 
 
 def test_warmup_marks_the_engine_and_discards_its_own_timings():
@@ -185,11 +295,22 @@ def test_rvc_engine_keeps_the_length_contract_across_sample_rates():
         # a real model returns model_sr audio of the equivalent duration
         return np.zeros(int(round(wav16k.size * 40000 / 16000)), dtype=np.float32)
 
-    eng = RVCTorchEngine(fake_infer, stream_sr=48000, model_sr=40000)
+    with pytest.warns(RuntimeWarning, match="not a whole factor"):
+        eng = RVCTorchEngine(fake_infer, stream_sr=48000, model_sr=40000)
     window = np.zeros(EXTRA + X + B, dtype=np.float32)
     out = eng.convert(window, 48000)
     assert out.size == window.size
     assert abs(seen["in_len"] - window.size / 3) <= 2
+
+
+def test_a_48k_model_resamples_on_an_integer_ratio_without_warning():
+    """48k and 24k models avoid the 20 dB penalty; 40k does not."""
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        RVCTorchEngine(lambda w: w, stream_sr=48000, model_sr=48000)
+        RVCTorchEngine(lambda w: w, stream_sr=48000, model_sr=24000)
 
 
 def test_rvc_engine_requires_a_callable():
@@ -344,9 +465,23 @@ def test_cli_rejects_crossfade_longer_than_block(capsys):
 
 def test_cli_parser_defaults_match_the_documented_baseline():
     args = build_parser().parse_args([])
-    assert (args.sr, args.io_block, args.block_ms, args.crossfade_ms) == (48000, 128, 32.0, 8.0)
-    assert args.extra_ms == 500.0
-    assert args.engine == "passthrough"
+    assert (args.sr, args.io_block, args.engine) == (48000, 128, "passthrough")
+    # Window sizes stay None so "typed the default" and "typed nothing" differ.
+    assert (args.block_ms, args.crossfade_ms, args.extra_ms) == (None, None, None)
+
+
+def test_cli_uses_the_10ms_grid_window_for_rvc_but_the_baseline_otherwise(capsys):
+    main(["--offline", "--offline-seconds", "0.5", "--warmup", "1"])
+    assert "B 1536 (32.00ms) X 384 (8.00ms)" in capsys.readouterr().out
+
+    # rvc stops at the missing backend, but only after sizing its window.
+    assert main(["--engine", "rvc"]) == 4
+
+
+def test_cli_rejects_an_off_grid_window_for_rvc_before_touching_the_backend(capsys):
+    """Exit 2 (bad arguments), not 4 (backend missing) -- the window is wrong first."""
+    assert main(["--engine", "rvc", "--block-ms", "33", "--crossfade-ms", "7"]) == 2
+    assert "10ms grid" in capsys.readouterr().err
 
 
 def test_sounddevice_absence_is_reported_clearly():

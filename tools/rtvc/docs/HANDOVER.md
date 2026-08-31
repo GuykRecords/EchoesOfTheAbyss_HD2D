@@ -2,83 +2,131 @@
 
 このファイルが現状の一次情報。作業を再開するときは最初にここを読む。
 
+**最終更新: 2026-08-26 の実機検証を反映**
+
 ---
 
 ## 確定済み環境
 
 | 項目 | 値 |
 |---|---|
-| GPU | RTX 4070 12GB (Ada, sm_89, driver 610.88) ※Blackwell ではない |
+| GPU | RTX 4070 12GB (Ada, sm_89) |
 | PC | GALLERIA XA7C-R47-WH / i7-14700 / RAM 32GB / Win11 25H2 |
-| venv（計測用） | `D:\Claude\Project\.venv` — Python 3.10.9, torch 2.11.0+cu128, sounddevice / scipy / soxr |
-| 入力 | device 23 = INZONE Buds Chat mic (WASAPI)。USB ドングル YY2977 のワイヤレス |
-| 出力 | device 22 = CABLE Input (WASAPI)。VB-CABLE 導入済み |
-| コード | このリポジトリの `tools/rtvc/`（旧 `D:\Claude\Project\rtvc` から移管） |
+| 計測用 venv | `D:\Claude\Project\.venv` — Python 3.10.9, torch 2.11 |
+| RVC 用 venv | `D:\Claude\Project\.venv-rvc` — Python 3.10.9, torch **2.7.1+cu128** |
+| 入力 | device 23 = INZONE Buds Chat mic (WASAPI 共有) |
+| 出力 | device 22 = CABLE Input (WASAPI 共有)。VB-CABLE 導入済み |
+| コード | このリポジトリの `tools/rtvc/` |
+
+> **`.venv-rvc` で計測ツールも全部動くことが検証済み。**
+> RVC を使うときはプロセスを 1 つで済ませられる。venv を行き来する必要はない。
 
 ---
 
-## 実測ベースライン
+## 実測ベースライン（WASAPI 共有 / in=23 / out=22）
 
-`--engine passthrough --io-block 128 --block-ms 32 --crossfade-ms 8`
+| 構成 | TOTAL | RTF | under/over/drop |
+|---|---|---|---|
+| passthrough B32 / X8 | **94.67 ms** | 0.01 | 0 / 0 / 0 |
+| fixed 25ms B32 / X8 | **126.00 ms** | 0.79 | 0 / 0 / 0 |
+| fixed 25ms B30 / X10 / EXTRA100（RVC 互換窓） | **122.70 ms** | 0.85 | 0 / 0 / 0 |
 
-```
-TOTAL 94.67ms
-  = in-dev 22.00 + block 32.00 + infer 0 + xfade 8.00 + out-buf 8.00 + out-dev 24.67
-under / over / drop すべて 0
-worker loop ema 0.278ms   ← CPU 側の余裕は十分ある
-```
+内訳は `in-dev 22.00 + block + infer + xfade + out-buf + out-dev 24.67`。
 
-**デバイス側 46.67ms が全体の約半分。最大の削りどころ。**
+**RTF 0.85 でも under/over/drop がすべて 0。** CPU 側の余裕は確認済みで、
+残る不確定要素は RVC の実推論時間だけ。
 
 ---
 
-## 次のタスク（この順で）
+## WASAPI 排他モード — 検証完了。**再試行は不要。**
 
-### 1. 未実施の計測 2 本 ← いまここ
-
-```powershell
-# ① 25ms のモデルを載せた想定で耐えるか
-python realtime.py --engine fixed --fixed-cost-ms 25 --in-device 23 --out-device 22 `
-  --sr 48000 --io-block 128 --block-ms 32 --crossfade-ms 8
-
-# ② WASAPI 排他モードでデバイス遅延が減るか
-python realtime.py --engine passthrough --in-device 23 --out-device 22 `
-  --sr 48000 --io-block 128 --block-ms 32 --crossfade-ms 8 --exclusive
-```
-
-判断基準：
-
-- **①で `under` / `drop` が 0 なら**、RTF 0.78 まで耐える構成だと確定する。
-- **②が通れば** in / out が各 5〜10ms まで下がる見込み。
-
-排他モードが蹴られた場合の切り分け順：
-
-1. 入力だけ排他 / 出力だけ排他、と片側ずつ試す（どちらのデバイスが拒否しているか特定）
-2. それでも駄目なら有線マイクへ（USB オーディオデバイス、または device 29 = Realtek Mic の WDM-KS）
-
-ワイヤレス（INZONE Buds）は原理的にデバイス遅延が大きい。**最終的には有線が答えになる可能性が高い。**
-
-### 2. RVC 本体の導入
-
-→ [`RVC_INTEGRATION.md`](RVC_INTEGRATION.md) に手順を分離した。
-
-**最重要の制約：現在の `.venv` には絶対に入れない。**
-numpy 2.2.6 と RVC 要求の 1.23.5 + fairseq が衝突して計測環境ごと壊れる。
-`D:\Claude\Project\.venv-rvc` を別に作る。
-
-### 3. `RVCTorchEngine` の接続
-
-`rtvc/engines.py` に受け口は実装済み。`infer_fn` を注入するだけ。
-→ 詳細は [`RVC_INTEGRATION.md`](RVC_INTEGRATION.md)
-
-### 4. 目標値
-
-| 指標 | 目標 |
+| 構成 | 結果 |
 |---|---|
-| `infer` | < 32ms（RTF < 1）。実運用は RTF 0.6 以下 |
-| `TOTAL` | 口 → 仮想ケーブルで 100ms 以下 |
+| in=23 排他 単独 | 開くが **実効 51079 Hz（+6.42%）で破綻** |
+| out=22 排他 単独 | lat **4.50ms** / 48000.9 Hz で正常 |
+| in=23 を含む duplex 排他 | **DEAD**（コールバック 0 回、例外なし） |
+| in=24 排他 duplex | OK（duplex 排他自体は可能） |
+| duplex 排他が成立する構成の報告値 | 42.67 / 45.33ms = **共有より悪化** |
+| 共有 duplex + 明示 latency 0.001〜0.01 | 全て 22.00 / 24.67ms から動かない |
 
-Discord 自体が受信側で 40〜100ms 持つが、**それは削れないので目標に含めない。**
+**犯人は INZONE Buds（ワイヤレス）の排他入力単独。**
+PortAudio の制限でもデバイス 22 でもない。Realtek Mic の WDM-KS は +0.01% / lat 11.00ms で正常だった。
+
+→ **duplex 1 本を維持する限り、デバイス側 46.67ms は動かせない。**
+→ ユーザー判断で「**46.67ms を受け入れて進む**」に決定済み。
+
+この検証中に、排他モードが**コールバック 0 回のまま `under=0` と表示される**
+サイレント失敗が見つかっている。ツール側は起動確認と途中ストール検出を持ち、
+どちらも `StreamDead` で `exit=3` になる（`tests/test_session.py` で回帰テスト済み）。
+
+---
+
+## RVC 本体（`D:\Claude\Project\RVC`, HEAD 81eed5e / 2026-08-04）
+
+`.venv-rvc` に torch 2.7.1+cu128 / torchaudio 2.7.1。`is_half=True` 確認済み。
+numpy 1.26.4 / transformers 4.49.0 / faiss-cpu 1.15.0 / torchfcpe 0.0.4 /
+praat-parselmouth 0.4.7。WebUI・訓練 UI・pymss は未導入。
+
+import 実測で `rtrvc.RVC` / `infer.hubert` / `SynthesizerTrnMs768NSFsid` / `RMVPE` /
+`Config` すべて通過。**HuBERT を fp16/cuda:0 で、RMVPE も実ロード成功（VRAM 368MB）。**
+
+ダウンロード済み資産（約 2.8GB, HuggingFace `lj1995/VoiceConversionWebUI`）:
+`assets/hubert_base` 181M / `assets/rmvpe` 173M / `assets/pretrained` 1.1G /
+`assets/pretrained_v2` 1.3G / `logs/mute` 展開済み。
+
+→ 接続手順は [`RVC_INTEGRATION.md`](RVC_INTEGRATION.md)。**旧メモとの差分が大きいので必ず読むこと。**
+
+---
+
+## 次のタスク
+
+### 1. 話者モデル `.pth` を作る ← いまここ
+
+**自分の声で学習する。** これが無いと `--engine rvc` は `exit=4` で正しく停止する。
+
+事前学習済みモデル（`assets/pretrained_v2`）はダウンロード済みなので、
+必要なのは自分の声の収録と訓練のみ。他人の RVC モデルを落として計測することは
+していない（→ 声の権利）。
+
+### 2. infer 時間の実測
+
+モデルができ次第。目標は `infer < 32ms`（RTF < 1、実運用 0.6 以下）。
+
+計測時は `torch.cuda.synchronize()` を必ず挟むこと。CUDA は非同期なので、
+入れないと infer が実際より小さく出る。
+
+### 3. TOTAL 目標の再評価
+
+デバイス 46.67ms を受け入れた前提では
+
+```
+46.67 (device) + 40 (B+X) + infer + out-buf
+```
+
+なので **infer をほぼ 0 にしても 90ms 台**。当初の「TOTAL 100ms 以下」は
+達成はできるが余裕がほとんど無い。Discord 受信側の 40〜100ms は削れないので
+目標には含めない。
+
+---
+
+## 有線マイク（Shure SE215 インラインマイク）に替える場合
+
+**デバイス番号が変わる。23 を決め打ちしてはいけない。**
+
+SE215 は Realtek のヘッドセットジャックに挿さるので:
+
+- 挿すまで WASAPI 側に Realtek マイクが現れない（今の一覧に無いのはそのため）
+- 挿すと番号が振り直され、既存の 18〜24 もずれる可能性がある
+
+必ず `python realtime.py --list-devices` で採り直すこと。
+
+さらに重要な点：**有線に替えても共有 duplex なら 22ms のまま**の可能性が高い。
+22ms は PortAudio の共有モード既定値であって、デバイス固有値ではない。
+
+10ms 級を取るには
+「**マイク交換**」と「**duplex 1 本を捨てて入出力を別ストリーム化**」の**両方**が要る。
+片方だけでは効果がない。そして別ストリーム化はクロック独立という別の問題を持ち込む
+（→ 不変条件 4）ので、トレードオフを理解した上でやること。
 
 ---
 
@@ -86,13 +134,19 @@ Discord 自体が受信側で 40〜100ms 持つが、**それは削れないの�
 
 1. 窓 = `[EXTRA | X | B]`。EXTRA は遅延に効かず計算量にだけ効く。この非対称性が設計の核。
    - 遅延を削る → `B` / `X` を削る
-   - 音が破綻 → `EXTRA` を伸ばす（0.5 → 1.0s）
+   - 音が破綻 → `EXTRA` を伸ばす
    - **この 2 つを混同しない**
 2. アルゴリズム遅延 = `B + X`
 3. オーディオコールバックで推論しない（リング操作のみ）
 4. 入出力は 1 本の duplex ストリーム（別々に開くとクロック独立でバッファが増える）
-5. `out-buf` は最小占有量で計上（平均だと `block` と二重計上）
+5. `out-buf` は**最小占有量**で計上（平均だと B/2 のドレイン分を含み `block` と二重計上。
+   実測で 16ms 過大に出ていた）
 6. 等パワークロスフェードは維持。passthrough で +3dB 盛るのは原理どおりで正常
+   （実測 0.207 = 0.5×(√2−1) と解析値が一致）
+7. `under` / `over` は最初の変換完了後から数える。それ以前は出力リングが空なのが
+   当たり前で、数えると `under` が構造上ゼロになれない
+8. Windows では `timeBeginPeriod(1)` を自前で握る。既定の ~15.6ms 刻みだと
+   warmup 実測が 33〜37ms とぶれ、そこから算出するプリフィルが過大になる
 
 ---
 
@@ -101,7 +155,7 @@ Discord 自体が受信側で 40〜100ms 持つが、**それは削れないの�
 学習に使ってよいのは**自分の声か、明示的に許諾された声素材のみ**。
 
 配布素材でも規約は個別（例：あみたろの声素材は変換していることの明記が条件）。
-他人の声の無断クローンは禁止。
+他人の声の無断クローンは禁止。そのため他人の RVC モデルを落として計測することはしていない。
 
 将来の用途（AI VTuber、ボイス素材の販売など）では、**素材ごとに商用可否を確認してから使う**。
 「無料配布だから自由」ではない。

@@ -1,135 +1,196 @@
 # RVC 本体の導入と接続
 
-`rtvc/engines.py` の `RVCTorchEngine` は**受け口だけ**が実装済みで、
-RVC / torch / fairseq を一切 import しない。だからこのリポジトリのテストは
-ML スタック無しで回る。ここでは「実機で何を繋ぐか」を書く。
+> **⚠ 初期の引き継ぎメモとの差分が大きい。** 実機で確認した結果、旧メモの
+> 「`tools/rvc_for_realtime.py` を使う」「fairseq が要る」「`protect` / `rms_mix_rate`
+> を設定する」は**いずれも現在の RVC には当てはまらない**。以下が実測に基づく現状。
 
 ---
 
-## 0. 最重要の制約
+## 0. 環境
 
-> **現在の `D:\Claude\Project\.venv` には RVC を入れない。**
+| 項目 | 値 | 備考 |
+|---|---|---|
+| venv | `D:\Claude\Project\.venv-rvc` | Python 3.10.9 |
+| torch | **2.7.1+cu128** | upstream が「2.8 未満」で固定している。上げない |
+| numpy | 1.26.4 | |
+| transformers | 4.49.0 | HuBERT のロードに使う |
+| faiss-cpu | 1.15.0 | index 検索 |
+| torchfcpe | 0.0.4 | `--f0-method fcpe` 用 |
+| RVC | `D:\Claude\Project\RVC` HEAD 81eed5e | |
 
-計測用 venv は numpy 2.2.6 で動いている。RVC は numpy 1.23.5 + fairseq を要求する。
-同居させると pip が numpy をダウングレードし、**計測環境ごと壊れる**。
+**`.venv-rvc` で計測ツールも動く**ことは検証済み。プロセスは 1 つで済む。
 
-`D:\Claude\Project\.venv-rvc` を別に作る。Python 3.10 は維持。
+upstream の `requirements.txt` は Python 3.12 用しか無いが、
+**リアルタイム推論に必要な部分集合は 3.10 で全部入る**（検証済み）。
+
+> パスは ASCII のみ。日本語やスペースを含むパスに置くと落ちる既知の問題がある。
 
 ---
 
-## 1. 環境構築
+## 1. 旧メモとの差分（重要な 5 点）
+
+### ① `tools/rvc_for_realtime.py` は存在しない
+
+現在は **`infer/rtrvc.py`** の `RVC` クラス。バッチ用の
+`infer/modules/vc/pipeline.py` は使わない（f0 キャッシュが効かず realtime に届かない）。
+
+### ② fairseq は依存から消えた
+
+HuBERT は **transformers** で `assets/hubert_base` からローカル読み込みする。
+「numpy 1.23.5 + fairseq で壊れる」という旧メモの懸念はもう当てはまらない。
+（それでも計測用 `.venv` と RVC 用 `.venv-rvc` は分けたまま運用している）
+
+### ③ torch は 2.7.1+cu128 固定
+
+upstream が "must stay below 2.8" と明示している。計測用 `.venv` の torch 2.11 とは別物。
+
+### ④ `protect` / `rms_mix_rate` はリアルタイム経路に存在しない
+
+`infer/cli.py` とバッチ側だけの引数。旧メモの「`protect = 0.5` / `rms_mix_rate = 0.25`」は
+**リアルタイムでは設定する場所が無い**。
+
+### ⑤ 10ms グリッド制約
+
+`skip_head` / `return_length` は `zc = sr // 100` の **10ms 単位**。
+さらにピッチキャッシュの前進量 `block_frame_16k // 160` も整数でないと
+**f0 が毎ブロックずれる**。
+
+→ **`--block-ms` / `--crossfade-ms` / `--extra-ms` は必ず 10 の倍数。**
+
+`B=30 / X=10 / EXTRA=100` ならアルゴリズム遅延 `B+X = 40ms` で従来と同値。
+`--engine rvc` を指定して窓を明示しなければ、この 30/10/100 に自動で切り替わる。
+10 の倍数でない値を渡すと `ValueError` で**起動時に**弾かれる。
+
+```
+RVC needs every window size on a 10ms grid; got block_ms=32.0ms, crossfade_ms=8.0ms.
+Use e.g. block 30 / crossfade 10 / extra 100 (B+X is still 40ms).
+```
+
+実行時に静かにピッチがずれるより、起動時に止まる方がはるかにましなので、ここは厳格にしてある。
+
+---
+
+## 2. 接続インタフェース
+
+`RVCTorchEngine` は RVC も torch も import しない。callable をひとつ注入するだけ。
+**2 つの形が自動判別で受け付けられる。**
+
+```python
+# ① 単純形（エンジン側が末尾を切り出す）
+infer_fn(wav16k) -> np.ndarray            # model_sr のオーディオ
+
+# ② tail 対応形（推奨）
+infer_fn(wav16k, skip_head, return_length) -> np.ndarray
+```
+
+`skip_head` / `return_length` は **16kHz サンプル数**で渡される。
+RVC が要求する `zc = 160` 単位への換算は**バックエンド側の仕事**（`// 160` するだけ）。
+
+### なぜ ② が推奨か — 約 3.4 倍
+
+ループが実際に使うのは末尾 `X + B` だけ。
+`return_length` を渡せば vocoder の合成量を **窓 140ms → 末尾 40ms** に削れる。
+`infer < 32ms` を狙うなら実質必須。
+
+`--engine rvc` では自動的に ② が使われ、warmup も**本番と同じ窓長・同じ tail**で 8 回走る。
+
+---
+
+## 3. 計測上の注意 — `torch.cuda.synchronize()`
+
+**CUDA は非同期。** `infer_fn` の中で最後に `torch.cuda.synchronize()` を呼ばないと、
+GPU の処理完了を待たずに戻るため **infer 時間が実際より小さく出る**。
+
+同じ理由で warmup も synchronize 込みで回すこと。
+
+## 3.1 Windows のタイマ分解能
+
+Windows の既定スケジューラ刻みは ~15.6ms。PortAudio はストリームを開いている間だけ
+これを上げるので、**ストリーム開始前に走る warmup は粗いクロックで測られる**。
+実測で 30ms の warmup が 33〜37ms とぶれ、そこから算出したプリフィルが過大になっていた。
+
+ツール側は `rtvc/timing.py` の `HighResolutionTimer` で
+`timeBeginPeriod(1)` を**実行全体にわたって**自前で握る。起動時に状態を表示する。
+
+---
+
+## 4. モデルのサンプルレートは 48k か 24k を選ぶ
+
+`StreamResampler` の実測:
+
+| 比 | rms 誤差 |
+|---|---|
+| 整数比（48k ↔ 16k, 48k ↔ 24k） | **−56 dB** |
+| 非整数比（48k ↔ 44.1k, 48k ↔ 40k） | **−35 dB** |
+
+**20dB の差。** モデル側レートは 48k の整数分の 1（16k / 24k）か、48k そのものを選ぶ。
+40k モデルを使うと `RVCTorchEngine` が起動時に `RuntimeWarning` を出す。
+
+---
+
+## 5. 推論パラメータ
+
+| パラメータ | 初期値 | 備考 |
+|---|---|---|
+| `f0_method` | `rmvpe` | 速度不足なら `fcpe`。**`harvest` / `crepe` はリアルタイム不可**なので CLI にも無い |
+| `index_rate` | 0.0〜0.3 | faiss 検索はブロック毎だとコストが高い。既定 0.0 |
+| `key` | 0 | 半音単位のピッチシフト |
+| `is_half` (fp16) | `True` | Ada なので有効 |
+| ~~`protect`~~ | — | **リアルタイム経路に存在しない** |
+| ~~`rms_mix_rate`~~ | — | **リアルタイム経路に存在しない** |
+
+---
+
+## 6. CLI
 
 ```powershell
-# 別 venv を作る（計測用とは完全に分離）
-py -3.10 -m venv D:\Claude\Project\.venv-rvc
-D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
-
-# Ada (sm_89) なので安定版 torch cu128 で良い。
-# nightly は不要。sm_120 (Blackwell) 向けの手順は無視してよい。
-pip install torch --index-url https://download.pytorch.org/whl/cu128
-
-# RVC 本体
-git clone https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI D:\Claude\Project\RVC
+python realtime.py --engine rvc --in-device 23 --out-device 22 --sr 48000 --io-block 128 `
+  --rvc-root D:\Claude\Project\RVC `
+  --rvc-model <話者>.pth --rvc-index <話者>.index `
+  --rvc-index-rate 0.0 --rvc-key 0 --f0-method rmvpe
 ```
 
-> **パスは ASCII のみ。** 日本語やスペースを含むパスに置くと落ちる既知の問題がある。
-> `D:\Claude\Project\RVC` は条件を満たしている。
+窓を明示しなければ 30/10/100 に自動設定される。
 
----
-
-## 2. 接続先を間違えないこと
-
-| 使う | 使わない |
+| 終了コード | 意味 |
 |---|---|
-| `tools/rvc_for_realtime.py` の `RVC` クラス | `infer/modules/vc/pipeline.py` |
-| リアルタイム用。f0 キャッシュが効く | バッチ用。ブロックごとに f0 を計算し直して速度が出ない |
-
-ここを取り違えると「実装は正しいのに RTF が 1 を超える」という
-原因の分かりにくい詰まり方をする。
-
----
-
-## 3. 繋ぎ方
-
-`RVCTorchEngine` が要求するのは、この形の callable ひとつだけ。
-
-```python
-infer_fn(wav16k: np.ndarray) -> np.ndarray   # 戻り値は model_sr のオーディオ
-```
-
-エンジン側が持っているのは「リアルタイム経路に属する部分」だけ:
-
-- ストリーム SR（48000）→ モデル入力 SR（16000）へのリサンプル
-- モデル出力 SR（40000 など）→ ストリーム SR へのリサンプル
-- 長さの契約（入力窓と同じサンプル数を返す）の担保
-
-つまり RVC 側の依存地獄は `infer_fn` を作るモジュールに閉じ込められる。
-
-```python
-from rtvc.engines import RVCTorchEngine
-from rtvc.realtime import WindowProcessor, RealtimeSession
-from rtvc.audio_io import AudioIO
-
-rvc = ...  # tools/rvc_for_realtime.py の RVC を初期化
-
-def infer_fn(wav16k):
-    return rvc.infer(wav16k, ...)   # 実引数は RVC 側のシグネチャに合わせる
-
-engine = RVCTorchEngine(infer_fn, stream_sr=48000, model_sr=40000)
-proc = WindowProcessor(engine, sr=48000, block=1536, crossfade=384, extra=24000)
-proc.warmup(8)          # ← 本番と同じ窓長で 8 回。忘れると最初の一言だけ 1 秒遅れる
-```
-
-### warmup を飛ばさない
-
-`BaseEngine.warmup()` は**本番と同じ窓長で** 8 回空回しする。
-CUDA コンテキストの遅延生成・カーネルのオートチューニング・cuDNN のアルゴリズム探索が
-全部「最初の一発目」に乗るので、忘れると最初の一言だけ 1 秒近く遅れて出る。
-**窓長が違うと同じコストが再発する**ので、必ず本番の窓長で行う。
+| 0 | 正常終了 |
+| 2 | 窓の指定が不正（10ms グリッド違反、X > B など） |
+| 3 | ストリームが開いたのに音が流れない／途中で止まった |
+| 4 | RVC の初期化に失敗（`.pth` が無い、RVC が見つからない など） |
 
 ---
 
-## 4. 推論パラメータ初期値
+## 7. 接続前の動作確認（GPU 不要）
 
-| パラメータ | 初期値 | 理由 |
-|---|---|---|
-| `f0_method` | `rmvpe` | 速度不足なら `fcpe`。**`harvest` / `crepe` はリアルタイム不可** |
-| `index_rate` | 0.0〜0.3 | faiss 検索はブロック毎だとコストが高い |
-| `protect` | 0.5 | |
-| `rms_mix_rate` | 0.25 | |
-| `fp16` | `True` | Ada なので有効 |
-
----
-
-## 5. 接続前の動作確認（GPU 不要）
-
-`infer_fn` の形が合っているかは、偽の推論関数で先に確かめられる。
+形が合っているかは偽の推論関数で先に確かめられる。
 
 ```python
 import numpy as np
 from rtvc.engines import RVCTorchEngine
 
-def fake_infer(wav16k):
-    # 本物と同じ「16k で受けて model_sr で返す」形だけ真似る
-    return np.zeros(int(wav16k.size * 40000 / 16000), dtype=np.float32)
+def fake_infer(wav16k, skip_head, return_length):
+    return np.zeros(int(return_length * 48000 / 16000), dtype=np.float32)
 
-engine = RVCTorchEngine(fake_infer, stream_sr=48000, model_sr=40000)
-out = engine.convert(np.zeros(25920, dtype=np.float32), 48000)
-assert out.size == 25920
+eng = RVCTorchEngine(fake_infer, stream_sr=48000, model_sr=48000,
+                     block_ms=30, crossfade_ms=10, extra_ms=100)
+assert eng.tail_aware
+out = eng.convert(np.zeros(6720, dtype=np.float32), 48000, tail=1920)
+assert out.size == 1920
 ```
 
-同じ内容が `tests/test_pipeline.py::test_rvc_engine_keeps_the_length_contract_across_sample_rates`
-として自動テストに入っている。
+同じ内容が `tests/test_pipeline.py` の
+`test_rvc_engine_detects_a_tail_aware_backend_and_passes_16k_units` として自動テストに入っている。
 
 ---
 
-## 6. 速度が出なかったときの順番
+## 8. 速度が出なかったときの順番
 
-1. `f0_method` を `rmvpe` → `fcpe` に落とす
-2. `index_rate` を 0.0 にする（faiss を切る）
-3. `--extra-ms` を 500 → 300 に減らす（**遅延ではなく計算量が減る**）
-4. `--block-ms` を 32 → 48 に**増やす**（1 ブロックあたりの推論回数が減り RTF が下がる。ただし遅延は増える）
-5. それでも駄目ならモデルを軽いものに変える
+1. `return_length`（tail）が効いているか確認する — `eng.tail_aware` が `True` か
+2. `f0_method` を `rmvpe` → `fcpe` に落とす
+3. `--rvc-index-rate` を 0.0 にする（faiss を切る）
+4. `--extra-ms` を 100 → 減らす（**遅延ではなく計算量が減る**。10 の倍数を維持）
+5. `--block-ms` を 30 → 40 に**増やす**（推論回数が減り RTF が下がる。ただし遅延は増える）
 
 **`--crossfade-ms` を削って速度を稼ごうとしないこと。** X は計算量にほぼ効かず、
 削ると継ぎ目が鳴るだけで損しかしない。
