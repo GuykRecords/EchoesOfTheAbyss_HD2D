@@ -38,8 +38,11 @@ git checkout claude/rtvc-realtime-audio-io-cc68yp
 
 ```powershell
 cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
-powershell -ExecutionPolicy Bypass -File scripts\inventory-local.ps1
+python scripts\inventory_local.py
 ```
+
+> PowerShell ではなく Python なのは、日本語を含む `.ps1` が Windows PowerShell 5.1 の
+> 既定コードページで文字化けして構文エラーになるため（実際にそれで一度失敗した）。
 
 出るもの：
 
@@ -75,20 +78,23 @@ cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
 python -m pytest tests\ -q
 
 # デバイス一覧が前と同じか
-python realtime.py --list-devices
+python realtime.py --list-devices --host-api WASAPI
 
-# ベースライン再現（10 秒ほどで Ctrl+C）
-python realtime.py --engine passthrough --in-device 23 --out-device 22 `
-  --sr 48000 --io-block 128 --block-ms 32 --crossfade-ms 8
+# ベースライン再現（12 秒で自動終了）
+python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
+  --out-device "CABLE Input" --duration 12 --prefill-ms 8
 ```
 
-`TOTAL` が **94.67ms 前後**、`under / over / drop` が **すべて 0** なら移行成功。
+> **デバイスは番号ではなく名前で指定する。** index は Windows が再列挙するたびにずれる。
+
+`TOTAL` が **94.67ms**、`under / over / drop` が **すべて 0** なら移行成功
+（2026-08-31 に確認済み）。
 違っていたら古い方を消さずにそのまま報告する。
 
 ### Step 5. 旧ディレクトリを退避する（削除ではない）
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\inventory-local.ps1 -ProposalOut cleanup-proposal.ps1
+python scripts\inventory_local.py --proposal cleanup-proposal.ps1
 
 # 中身を読む
 type cleanup-proposal.ps1
@@ -96,6 +102,9 @@ type cleanup-proposal.ps1
 # 納得したら自分で実行する
 powershell -ExecutionPolicy Bypass -File cleanup-proposal.ps1
 ```
+
+書き出される退避案には `Remove-Item` が一切含まれない（`Rename-Item` だけ）ことを
+自動テストで担保してある。
 
 `D:\Claude\Project\rtvc` → `D:\Claude\Project\rtvc._archived_YYYYMMDD` に**改名**するだけ。
 中身は消えない。
