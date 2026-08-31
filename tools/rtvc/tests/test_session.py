@@ -236,3 +236,77 @@ def test_high_resolution_timer_is_safe_to_use_anywhere():
     assert not clock.active, "timeEndPeriod must be paired with timeBeginPeriod"
     assert "scheduler timer" in described
     clock.stop()  # idempotent
+
+
+# --------------------------------------------------------------------------
+# Device pairing: catch the mistake before PortAudio does
+# --------------------------------------------------------------------------
+
+
+class FakeSd:
+    """Just enough of sounddevice to answer device queries."""
+
+    def __init__(self, devices, apis):
+        self._devices = devices
+        self._apis = apis
+
+    def query_devices(self, index):
+        return self._devices[index]
+
+    def query_hostapis(self, index):
+        return self._apis[index]
+
+
+def _device(name, hostapi, ins, outs):
+    return {"name": name, "hostapi": hostapi,
+            "max_input_channels": ins, "max_output_channels": outs}
+
+
+def _paired_io(in_device, out_device, channels=1):
+    io = AudioIO(sr=SR, blocksize=128, in_device=in_device,
+                 out_device=out_device, channels=channels)
+    io._sd = FakeSd(
+        devices={
+            0: _device("Realtek mic", 0, 2, 0),        # WASAPI capture
+            1: _device("CABLE Input", 0, 0, 2),        # WASAPI playback
+            2: _device("Realtek mic (KS)", 1, 2, 0),   # a different host API
+            3: _device("mono headset mic", 0, 1, 0),
+        },
+        apis={0: {"name": "Windows WASAPI"}, 1: {"name": "Windows WDM-KS"}},
+    )
+    return io
+
+
+def test_devices_on_different_host_apis_are_rejected_with_the_reason():
+    """PortAudio calls this 'Illegal combination of I/O devices'. Say what it is."""
+    io = _paired_io(2, 1)
+    with pytest.raises(RuntimeError, match="different host APIs"):
+        io._check_pairing()
+
+
+def test_a_playback_device_used_as_input_is_named_as_such():
+    io = _paired_io(1, 1)
+    with pytest.raises(RuntimeError, match="no input channels"):
+        io._check_pairing()
+
+
+def test_a_capture_device_used_as_output_is_named_as_such():
+    io = _paired_io(0, 0)
+    with pytest.raises(RuntimeError, match="no output channels"):
+        io._check_pairing()
+
+
+def test_asking_for_more_channels_than_the_device_has_is_rejected():
+    io = _paired_io(3, 1, channels=2)
+    with pytest.raises(RuntimeError, match="input channel"):
+        io._check_pairing()
+
+
+def test_a_valid_pairing_passes():
+    _paired_io(0, 1)._check_pairing()
+
+
+def test_describe_devices_names_both_endpoints_and_their_apis():
+    text = _paired_io(0, 1).describe_devices()
+    assert "Realtek mic" in text and "CABLE Input" in text
+    assert "Windows WASAPI" in text

@@ -682,6 +682,11 @@ def _run(args, sr, block, crossfade, extra, clock) -> int:
         proc, io, report_sec=args.report_sec,
         prefill_samples=int(round(sr * args.prefill_ms / 1000.0)),
     )
+    try:
+        print(io.describe_devices())
+    except RuntimeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
     print("running -- Ctrl+C to stop")
     try:
         session.run(duration=args.duration)

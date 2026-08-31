@@ -294,21 +294,104 @@ class AudioIO:
         if samples > 0:
             self.out_ring.write(np.zeros(int(samples), dtype=np.float32))
 
+    def describe_devices(self) -> str:
+        """Name both endpoints and their host APIs, before anything is opened.
+
+        Device indices shift whenever Windows re-enumerates -- plugging in a
+        headset renumbers everything after it -- so a run that names the wrong
+        device is the normal failure, not an exotic one.  Printing what the
+        indices actually resolved to turns "illegal combination" into something
+        a person can act on.
+        """
+        sd = self._sd or require_sounddevice()
+        lines = []
+        for label, dev in (("in ", self.in_device), ("out", self.out_device)):
+            try:
+                info = sd.query_devices(dev if dev is not None else
+                                        (sd.default.device[0] if label == "in "
+                                         else sd.default.device[1]))
+                api = sd.query_hostapis(info["hostapi"])["name"]
+                lines.append(f"  {label} [{dev}] {info['name']}  ({api}, "
+                             f"{info['max_input_channels']}in/"
+                             f"{info['max_output_channels']}out)")
+            except Exception as exc:  # pragma: no cover - depends on the host
+                lines.append(f"  {label} [{dev}] <could not query: {exc}>")
+        return "\n".join(lines)
+
+    def _check_pairing(self) -> None:
+        """Reject pairings PortAudio would refuse, with the reason spelled out."""
+        sd = self._sd
+        if self.in_device is None or self.out_device is None:
+            return
+        try:
+            in_info = sd.query_devices(self.in_device)
+            out_info = sd.query_devices(self.out_device)
+        except Exception:
+            return  # let PortAudio produce the error
+
+        in_api = sd.query_hostapis(in_info["hostapi"])["name"]
+        out_api = sd.query_hostapis(out_info["hostapi"])["name"]
+        if in_info["hostapi"] != out_info["hostapi"]:
+            raise RuntimeError(
+                "input and output are on different host APIs, which cannot share "
+                f"one duplex stream:\n"
+                f"  in  [{self.in_device}] {in_info['name']}  ({in_api})\n"
+                f"  out [{self.out_device}] {out_info['name']}  ({out_api})\n"
+                "Pick both from the same host API -- run --list-devices and use two "
+                "rows with the same bracketed name."
+            )
+        if in_info["max_input_channels"] < 1:
+            raise RuntimeError(
+                f"--in-device [{self.in_device}] {in_info['name']} has no input "
+                "channels; it is a playback device."
+            )
+        if out_info["max_output_channels"] < 1:
+            raise RuntimeError(
+                f"--out-device [{self.out_device}] {out_info['name']} has no output "
+                "channels; it is a capture device."
+            )
+        if in_info["max_input_channels"] < self.channels:
+            raise RuntimeError(
+                f"--in-device [{self.in_device}] {in_info['name']} offers "
+                f"{in_info['max_input_channels']} input channel(s), "
+                f"--channels asks for {self.channels}."
+            )
+        if out_info["max_output_channels"] < self.channels:
+            raise RuntimeError(
+                f"--out-device [{self.out_device}] {out_info['name']} offers "
+                f"{out_info['max_output_channels']} output channel(s), "
+                f"--channels asks for {self.channels}."
+            )
+
     def start(self) -> None:
         if self._stream is not None:
             return
         sd = self._sd = require_sounddevice()
-        self._stream = sd.Stream(
-            samplerate=self.sr,
-            blocksize=self.blocksize,
-            device=(self.in_device, self.out_device),
-            channels=(self.channels, self.channels),
-            dtype=self.dtype,
-            latency=self.latency,
-            callback=self._callback,
-            extra_settings=self._extra_settings(),
-        )
-        self._stream.start()
+        self._check_pairing()
+        try:
+            self._stream = sd.Stream(
+                samplerate=self.sr,
+                blocksize=self.blocksize,
+                device=(self.in_device, self.out_device),
+                channels=(self.channels, self.channels),
+                dtype=self.dtype,
+                latency=self.latency,
+                callback=self._callback,
+                extra_settings=self._extra_settings(),
+            )
+            self._stream.start()
+        except Exception as exc:
+            self._stream = None
+            raise RuntimeError(
+                f"could not open the duplex stream ({exc})\n"
+                f"{self.describe_devices()}\n"
+                f"  requested: {self.sr} Hz, {self.channels}ch, blocksize "
+                f"{self.blocksize}, latency {self.latency!r}"
+                + (", WASAPI exclusive" if self.exclusive else "")
+                + "\nThings to try, one at a time: --channels 2 (many capture "
+                  "devices are stereo-only), a different --sr, a larger "
+                  "--io-block, or two devices on the same host API."
+            ) from exc
 
     def stop(self) -> None:
         if self._stream is None:
