@@ -420,38 +420,108 @@ def list_devices() -> Sequence[dict]:
     return sd.query_devices()
 
 
-def format_device_table() -> str:
+def _host_api_name(sd, device: dict) -> str:
+    return sd.query_hostapis(device["hostapi"])["name"]
+
+
+def format_device_table(host_api: Optional[str] = None) -> str:
     sd = require_sounddevice()
     devices = sd.query_devices()
     apis = sd.query_hostapis()
+    needle = host_api.lower() if host_api else None
+
     lines = [f"{'idx':>4}  {'in':>3} {'out':>3}  {'default sr':>10}  host API / name"]
     lines.append("-" * 78)
+    shown = 0
     for idx, dev in enumerate(devices):
         api = apis[dev["hostapi"]]["name"]
+        if needle and needle not in api.lower():
+            continue
+        shown += 1
         lines.append(
             f"{idx:>4}  {dev['max_input_channels']:>3} {dev['max_output_channels']:>3}  "
             f"{dev['default_samplerate']:>10.0f}  [{api}] {dev['name']}"
         )
+    if needle and shown == 0:
+        available = sorted({a["name"] for a in apis})
+        lines.append(f"(no host API matching {host_api!r}; this machine has: "
+                     f"{', '.join(available)})")
+    lines.append("")
+    lines.append("Indices move whenever Windows re-enumerates -- plugging in a headset, or a "
+                 "wireless device going to sleep, renumbers everything after it.")
+    lines.append("Prefer names: --host-api WASAPI --in-device \"Realtek\" "
+                 "--out-device \"CABLE Input\"")
     return "\n".join(lines)
 
 
-def resolve_device(spec: Optional[str], kind: str) -> Optional[Any]:
-    """Accept an index (``23``), a name substring, or ``None`` for the default."""
+def resolve_device(spec: Optional[str], kind: str,
+                   host_api: Optional[str] = None) -> Optional[Any]:
+    """Resolve a device from an index, a name substring, or ``None``.
+
+    Indices are convenient and *not stable*: Windows renumbers every device
+    after one that appears or disappears, so a wireless headset going to sleep
+    silently repoints an index at something else entirely.  A name plus
+    ``host_api`` survives that, which is why it is the documented form.
+
+    When an index is given together with ``host_api``, the pairing is verified
+    -- catching exactly the case where yesterday's index now means a different
+    device.
+    """
     if spec is None or spec == "":
         return None
-    try:
-        return int(spec)
-    except (TypeError, ValueError):
-        pass
+
     sd = require_sounddevice()
     devices = sd.query_devices()
-    needle = str(spec).lower()
     key = "max_input_channels" if kind == "input" else "max_output_channels"
+    api_needle = host_api.lower() if host_api else None
+
+    def in_api(dev) -> bool:
+        return api_needle is None or api_needle in _host_api_name(sd, dev).lower()
+
+    def describe(i) -> str:
+        d = devices[i]
+        return f"{i}: [{_host_api_name(sd, d)}] {d['name']}"
+
+    # -- index -------------------------------------------------------------
+    try:
+        idx = int(spec)
+    except (TypeError, ValueError):
+        idx = None
+    if idx is not None:
+        if not 0 <= idx < len(devices):
+            raise ValueError(f"device index {idx} does not exist; try --list-devices")
+        dev = devices[idx]
+        if dev[key] < 1:
+            raise ValueError(
+                f"--{'in' if kind == 'input' else 'out'}-device {idx} is "
+                f"[{_host_api_name(sd, dev)}] {dev['name']}, which has no "
+                f"{kind} channels. Indices move; check --list-devices."
+            )
+        if not in_api(dev):
+            raise ValueError(
+                f"device index {idx} is [{_host_api_name(sd, dev)}] {dev['name']}, "
+                f"not on host API {host_api!r}. Indices move; use a name instead."
+            )
+        return idx
+
+    # -- name substring ----------------------------------------------------
+    needle = str(spec).lower()
     matches = [i for i, d in enumerate(devices)
-               if needle in d["name"].lower() and d[key] > 0]
+               if needle in d["name"].lower() and d[key] > 0 and in_api(d)]
     if not matches:
-        raise ValueError(f"no {kind} device matching {spec!r}; try --list-devices")
+        candidates = [describe(i) for i, d in enumerate(devices)
+                      if d[key] > 0 and in_api(d)]
+        scope = f" on host API {host_api!r}" if host_api else ""
+        listing = ("\n  ".join(candidates[:12]) if candidates
+                   else "(none -- check --list-devices)")
+        raise ValueError(
+            f"no {kind} device matching {spec!r}{scope}. Available {kind} devices"
+            f"{scope}:\n  {listing}"
+        )
     if len(matches) > 1:
-        names = ", ".join(f"{i}:{devices[i]['name']}" for i in matches[:6])
-        raise ValueError(f"{spec!r} matches several {kind} devices ({names}); use the index")
+        listing = "\n  ".join(describe(i) for i in matches[:8])
+        raise ValueError(
+            f"{spec!r} matches several {kind} devices:\n  {listing}\n"
+            "Narrow it with --host-api, or type more of the name."
+        )
     return matches[0]

@@ -257,9 +257,10 @@ class FakeSd:
         return self._apis[index]
 
 
-def _device(name, hostapi, ins, outs):
+def _device(name, hostapi, ins, outs, samplerate=48000.0):
     return {"name": name, "hostapi": hostapi,
-            "max_input_channels": ins, "max_output_channels": outs}
+            "max_input_channels": ins, "max_output_channels": outs,
+            "default_samplerate": samplerate}
 
 
 def _paired_io(in_device, out_device, channels=1):
@@ -310,3 +311,94 @@ def test_describe_devices_names_both_endpoints_and_their_apis():
     text = _paired_io(0, 1).describe_devices()
     assert "Realtek mic" in text and "CABLE Input" in text
     assert "Windows WASAPI" in text
+
+
+# --------------------------------------------------------------------------
+# Naming a device instead of numbering it
+# --------------------------------------------------------------------------
+
+
+class FakeSdWithList(FakeSd):
+    def __init__(self, devices, apis):
+        super().__init__({i: d for i, d in enumerate(devices)}, apis)
+        self._list = devices
+
+    def query_devices(self, index=None):
+        return self._list if index is None else self._list[index]
+
+    def query_hostapis(self, index=None):
+        if index is None:
+            return [self._apis[i] for i in sorted(self._apis)]
+        return self._apis[index]
+
+
+@pytest.fixture
+def stub_devices(monkeypatch):
+    """A machine that looks like the real one: same names across host APIs."""
+    devices = [
+        _device("マイク (Realtek(R) Audio)", 0, 2, 0),          # 0 MME
+        _device("CABLE Input (VB-Audio Virtual Cable)", 0, 0, 16),  # 1 MME
+        _device("マイク (Realtek(R) Audio)", 1, 2, 0),          # 2 WASAPI
+        _device("CABLE In 16ch (VB-Audio Virtual Cable)", 1, 0, 2),  # 3 WASAPI
+        _device("CABLE Input (VB-Audio Virtual Cable)", 1, 0, 2),    # 4 WASAPI
+        _device("Output (VB-Audio Point)", 2, 0, 16),           # 5 WDM-KS
+    ]
+    apis = {0: {"name": "MME"}, 1: {"name": "Windows WASAPI"},
+            2: {"name": "Windows WDM-KS"}}
+    fake = FakeSdWithList(devices, apis)
+    monkeypatch.setattr("rtvc.audio_io.require_sounddevice", lambda: fake)
+    return fake
+
+
+def test_a_name_plus_host_api_picks_exactly_one_device(stub_devices):
+    """The stable way to name a device: substring + host API."""
+    from rtvc.audio_io import resolve_device
+
+    assert resolve_device("Realtek", "input", "WASAPI") == 2
+    assert resolve_device("CABLE Input", "output", "WASAPI") == 4
+
+
+def test_the_same_name_without_a_host_api_is_ambiguous_and_says_so(stub_devices):
+    from rtvc.audio_io import resolve_device
+
+    with pytest.raises(ValueError, match="matches several"):
+        resolve_device("Realtek", "input")
+
+
+def test_an_unknown_name_lists_what_is_actually_available(stub_devices):
+    from rtvc.audio_io import resolve_device
+
+    with pytest.raises(ValueError) as excinfo:
+        resolve_device("Shure", "input", "WASAPI")
+    assert "Realtek" in str(excinfo.value), "the error should show the real candidates"
+
+
+def test_an_index_pointing_at_the_wrong_host_api_is_caught(stub_devices):
+    """Exactly the failure a sleeping wireless headset causes: indices shift."""
+    from rtvc.audio_io import resolve_device
+
+    with pytest.raises(ValueError, match="not on host API"):
+        resolve_device("5", "output", "WASAPI")
+
+
+def test_an_index_pointing_at_a_playback_device_used_as_input_is_caught(stub_devices):
+    from rtvc.audio_io import resolve_device
+
+    with pytest.raises(ValueError, match="no input channels"):
+        resolve_device("4", "input")
+
+
+def test_an_out_of_range_index_is_reported_plainly(stub_devices):
+    from rtvc.audio_io import resolve_device
+
+    with pytest.raises(ValueError, match="does not exist"):
+        resolve_device("99", "input")
+
+
+def test_device_table_can_be_narrowed_to_one_host_api(stub_devices):
+    from rtvc.audio_io import format_device_table
+
+    text = format_device_table("WASAPI")
+    assert "Windows WASAPI" in text
+    assert "Windows WDM-KS" not in text
+    assert "Prefer names" in text

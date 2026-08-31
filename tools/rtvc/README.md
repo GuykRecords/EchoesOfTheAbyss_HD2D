@@ -14,12 +14,21 @@
 
 ## 1. すぐ使うコマンド
 
+> **⚠ デバイス番号（index）は固定ではありません。**
+> ヘッドセットを挿す、ワイヤレス機器がスリープする、それだけで
+> Windows は全デバイスを振り直します。昨日動いたコマンドが今日は
+> 別のデバイスを指している、が普通に起きます。
+> **名前 + `--host-api` で指定してください。**
+
 ```powershell
 # 家の PC（D:\Claude\Project\.venv を有効化した状態で）
 cd <このリポジトリ>\tools\rtvc
 
-# デバイス一覧
-python realtime.py --list-devices
+# デバイス一覧（WASAPI だけに絞る）
+python realtime.py --list-devices --host-api WASAPI
+
+# 名前で指定（番号が振り直されても壊れない）
+python realtime.py --host-api WASAPI --in-device "Realtek" --out-device "CABLE Input"
 
 # ベースライン計測（passthrough = 変換なし）
 python realtime.py --engine passthrough --in-device 23 --out-device 22 --sr 48000 --io-block 128 --block-ms 32 --crossfade-ms 8
@@ -182,7 +191,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-88 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
+95 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
 （`.github/workflows/rtvc-tests.yml`）。
 
 うち 9 件（`tests/test_session.py`）は、PortAudio のコールバックを偽のフィーダから

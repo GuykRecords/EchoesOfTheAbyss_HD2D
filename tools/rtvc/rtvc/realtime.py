@@ -487,8 +487,14 @@ def build_parser() -> argparse.ArgumentParser:
                    help="print the audio device table and exit")
 
     dev = p.add_argument_group("devices")
-    dev.add_argument("--in-device", default=None, help="input device index or name substring")
-    dev.add_argument("--out-device", default=None, help="output device index or name substring")
+    dev.add_argument("--in-device", default=None,
+                     help="input device: a name substring (recommended) or an index")
+    dev.add_argument("--out-device", default=None,
+                     help="output device: a name substring (recommended) or an index")
+    dev.add_argument("--host-api", default=None,
+                     help="restrict device names to one host API, e.g. WASAPI. "
+                          "Indices move when Windows re-enumerates; a name plus "
+                          "--host-api does not")
     dev.add_argument("--sr", type=int, default=48000, help="stream sample rate")
     dev.add_argument("--io-block", type=int, default=128,
                      help="PortAudio blocksize in samples (device-side granularity)")
@@ -565,7 +571,7 @@ def main(argv: Optional[list] = None) -> int:
         from .audio_io import format_device_table
 
         try:
-            print(format_device_table())
+            print(format_device_table(args.host_api))
         except RuntimeError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 3
@@ -662,8 +668,8 @@ def _run(args, sr, block, crossfade, extra, clock) -> int:
     from .audio_io import AudioIO, resolve_device
 
     try:
-        in_device = resolve_device(args.in_device, "input")
-        out_device = resolve_device(args.out_device, "output")
+        in_device = resolve_device(args.in_device, "input", args.host_api)
+        out_device = resolve_device(args.out_device, "output", args.host_api)
     except (RuntimeError, ValueError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 3
