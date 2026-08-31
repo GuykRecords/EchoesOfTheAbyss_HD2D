@@ -72,19 +72,47 @@ Use e.g. block 30 / crossfade 10 / extra 100 (B+X is still 40ms).
 
 ## 2. 接続インタフェース
 
-`RVCTorchEngine` は RVC も torch も import しない。callable をひとつ注入するだけ。
-**2 つの形が自動判別で受け付けられる。**
+役割分担はこうなっている。
+
+| モジュール | 依存 | 役割 |
+|---|---|---|
+| `rtvc/engines.py` | numpy / scipy のみ | 窓・tail・長さの契約・計測 |
+| `rtvc/rvc_backend.py` | **torch と RVC** | `infer/rtrvc.py` の `RVC` を握る。単位換算もここ |
+
+`rvc_backend.py` は torch を**遅延 import** するので、torch の無い環境でも
+`import rtvc.rvc_backend` は通る（CI がそれを確かめている）。
+
+### エンジンに注入する callable
 
 ```python
 # ① 単純形（エンジン側が末尾を切り出す）
 infer_fn(wav16k) -> np.ndarray            # model_sr のオーディオ
 
-# ② tail 対応形（推奨）
+# ② tail 対応形（推奨。rvc_backend.py はこちら）
 infer_fn(wav16k, skip_head, return_length) -> np.ndarray
 ```
 
-`skip_head` / `return_length` は **16kHz サンプル数**で渡される。
-RVC が要求する `zc = 160` 単位への換算は**バックエンド側の仕事**（`// 160` するだけ）。
+**`skip_head` / `return_length` は 16kHz サンプル数で渡す。**
+RVC が要求する 10ms 単位（`zc = sr // 100`、16kHz では 160 サンプル）への換算は
+`rvc_backend.to_zc_units()` が担当し、割り切れなければ**例外を投げる**。
+黙って丸めると f0 が毎ブロック少しずつずれていくため。
+
+### 実際の RVC 側 API（実機で確認済み）
+
+```python
+from configs.config import Config
+from infer.rtrvc import RVC
+
+rvc = RVC(key, formant, pth_path, index_path, index_rate, config)
+y = rvc.infer(x_tensor_16k, block_frame_16k, skip_head_zc, return_length_zc, f0method)
+```
+
+- `skip_head` / `return_length` は **10ms 単位**
+- `block_frame_16k` は **16kHz サンプル数**（`block_ms * 16`）
+- `RVC.__init__` は**例外を握り潰して traceback を print するだけ**なので、
+  戻ったあと `net_g is None` を確認しないと壊れたまま進む
+- RVC はカレントディレクトリ相対で `assets/` を読む箇所がある（`rmvpe.pt` など）ため、
+  `rvc_backend.py` は `os.chdir(rvc_root)` してから import する（`close()` で戻す）
 
 ### なぜ ② が推奨か — 約 3.4 倍
 
@@ -93,6 +121,21 @@ RVC が要求する `zc = 160` 単位への換算は**バックエンド側の�
 `infer < 32ms` を狙うなら実質必須。
 
 `--engine rvc` では自動的に ② が使われ、warmup も**本番と同じ窓長・同じ tail**で 8 回走る。
+
+### 出力クッションは warmup から自動で決まる
+
+`--engine rvc` では `--prefill-ms` の既定が **`auto`** になる。
+warmup の**後半イテレーションの最大値**（コールドスタートを除いた定常推定）を
+そのままクッションに使う。
+
+```
+warmup      : steady 18.42ms  peak 512.30ms
+out cushion : 18.42ms  [auto (steady warmup 18.42ms over 8 iterations)]
+```
+
+初回出力は `B + infer` 後にしか出ないので、ここを見誤ると起動直後の
+アンダーランでクッションを食い潰し、余裕ゼロのまま走ることになる。
+数値を明示すれば手動指定もできる（`--prefill-ms 12`）。
 
 ---
 
@@ -144,13 +187,18 @@ Windows の既定スケジューラ刻みは ~15.6ms。PortAudio はストリー
 ## 6. CLI
 
 ```powershell
-python realtime.py --engine rvc --in-device 23 --out-device 22 --sr 48000 --io-block 128 `
-  --rvc-root D:\Claude\Project\RVC `
-  --rvc-model <話者>.pth --rvc-index <話者>.index `
-  --rvc-index-rate 0.0 --rvc-key 0 --f0-method rmvpe
+python realtime.py --engine rvc --host-api WASAPI `
+  --in-device "INZONE Buds - Chat" --out-device "CABLE Input" `
+  --rvc-root D:\Claude\Project\RVC
 ```
 
-窓を明示しなければ 30/10/100 に自動設定される。
+- 窓を明示しなければ **30/10/100** に自動設定される
+- `--rvc-model` を省くと `assets/weights` の先頭の `.pth` と、同名の `.index` を自動で探す
+- `--prefill-ms` を省くと **`auto`**（warmup の定常推定）
+- **デバイスは番号ではなく名前で指定する。** index は Windows が再列挙するたびにずれる
+
+その他: `--rvc-index-rate` (既定 0.0) / `--rvc-key` (半音) / `--rvc-formant` /
+`--f0-method {rmvpe,fcpe}`
 
 | 終了コード | 意味 |
 |---|---|

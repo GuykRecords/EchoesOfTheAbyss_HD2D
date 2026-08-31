@@ -490,3 +490,41 @@ def test_sounddevice_absence_is_reported_clearly():
         require_sounddevice()
     except RuntimeError as exc:
         assert "--offline" in str(exc)
+
+
+# --------------------------------------------------------------------------
+# Warmup and the pre-roll it sizes
+# --------------------------------------------------------------------------
+
+
+def test_fixed_cost_engine_hits_its_budget_closely():
+    """A sleep alone overshoots; the answer to 'can it carry 25ms?' depends on this."""
+    eng = FixedCostEngine(cost_ms=20.0)
+    window = np.zeros(1024, dtype=np.float32)
+    for _ in range(8):
+        eng.convert(window, SR)
+    assert 19.5 <= eng.infer_ms_ema <= 22.0, f"asked for 20ms, measured {eng.infer_ms_ema}ms"
+
+
+def test_warmup_reports_a_steady_estimate_that_ignores_the_cold_start():
+    """The pre-roll is sized from this, so the cold first call must not inflate it."""
+    costs = iter([0.050, 0.040, 0.001, 0.001, 0.001, 0.001])
+
+    def fn(window, sr, tail=None):
+        import time
+        time.sleep(next(costs))
+        return window
+
+    class Slow(PassthroughEngine):
+        _convert = staticmethod(fn)
+
+    eng = Slow()
+    steady = eng.warmup(1024, SR, iters=6)
+    assert steady < 10.0, f"cold start leaked into the steady estimate ({steady}ms)"
+    assert eng.warmup_ms_peak > 30.0, "the cold start should still be visible as the peak"
+
+
+def test_warmup_returns_through_the_processor():
+    proc = WindowProcessor(FixedCostEngine(cost_ms=5.0), SR, B, X, EXTRA)
+    steady = proc.warmup(iters=4)
+    assert 4.0 <= steady <= 8.0

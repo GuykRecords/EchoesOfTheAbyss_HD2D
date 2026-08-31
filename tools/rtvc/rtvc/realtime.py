@@ -137,11 +137,11 @@ class WindowProcessor:
         if self.gate:
             self.gate.reset()
 
-    def warmup(self, iters: int = 8) -> None:
+    def warmup(self, iters: int = 8) -> float:
         # Same window length *and* same tail as the live loop, or the
         # one-off costs warmup exists to absorb simply happen again.
-        self.engine.warmup(self.window_len, self.sr, iters=iters,
-                           tail=self.crossfade + self.block)
+        return self.engine.warmup(self.window_len, self.sr, iters=iters,
+                                  tail=self.crossfade + self.block)
 
     # -- the loop body ------------------------------------------------------
     def process_block(self, block: np.ndarray) -> np.ndarray:
@@ -530,6 +530,7 @@ def build_parser() -> argparse.ArgumentParser:
     rvc.add_argument("--rvc-index-rate", type=float, default=0.0,
                      help="faiss blend; searching every block is expensive, start at 0")
     rvc.add_argument("--rvc-key", type=int, default=0, help="pitch shift in semitones")
+    rvc.add_argument("--rvc-formant", type=float, default=0.0, help="formant shift")
     rvc.add_argument("--f0-method", default="rmvpe", choices=("rmvpe", "fcpe"),
                      help="harvest/crepe are not realtime-capable and are not offered")
 
@@ -543,9 +544,10 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--duration", type=float, default=0.0,
                      help="stop after N seconds (0 = run until Ctrl+C)")
     run.add_argument("--ring-seconds", type=float, default=2.0, help="ring buffer capacity")
-    run.add_argument("--prefill-ms", type=float, default=0.0,
-                     help="seed the output ring with this much silence; costs the "
-                          "same amount of latency, try 8 if under/drop will not reach 0")
+    run.add_argument("--prefill-ms", default=None,
+                     help="output cushion in ms, or 'auto' to size it from the measured "
+                          "warmup cost. Costs exactly that much latency and shows up in "
+                          "out-buf. Default: 0, or 'auto' for --engine rvc")
 
     off = p.add_argument_group("offline (no audio hardware)")
     off.add_argument("--offline", action="store_true",
@@ -613,7 +615,8 @@ def main(argv: Optional[list] = None) -> int:
 
 
 def _run(args, sr, block, crossfade, extra, clock) -> int:
-    if args.engine == "rvc":
+    is_rvc = args.engine == "rvc"
+    if is_rvc:
         try:
             from .rvc_backend import build_rvc_engine
         except ImportError:
@@ -654,7 +657,25 @@ def _run(args, sr, block, crossfade, extra, clock) -> int:
           f"{'off' if args.no_highpass else 'on'}")
     print(clock.describe())
 
-    proc.warmup(args.warmup)
+    warm_ms = proc.warmup(args.warmup)
+
+    # A cushion sized by hand is a guess; sized from the warmup it is a
+    # measurement. Only meaningful once the scheduler tick is raised, which is
+    # why the timer is held around warmup too.
+    spec = args.prefill_ms if args.prefill_ms is not None else ("auto" if is_rvc else "0")
+    if str(spec).lower() == "auto":
+        cushion_ms = warm_ms
+        origin = f"auto (steady warmup {warm_ms:.2f}ms over {args.warmup} iterations)"
+    else:
+        try:
+            cushion_ms = float(spec)
+        except ValueError:
+            print(f"error: --prefill-ms must be a number or 'auto', got {spec!r}",
+                  file=sys.stderr)
+            return 2
+        origin = "given"
+    print(f"warmup      : steady {warm_ms:.2f}ms  peak {proc.engine.warmup_ms_peak:.2f}ms")
+    print(f"out cushion : {cushion_ms:.2f}ms  [{origin}]")
 
     if args.offline:
         signal = (_read_wav(args.offline_input, sr) if args.offline_input
@@ -686,7 +707,7 @@ def _run(args, sr, block, crossfade, extra, clock) -> int:
     )
     session = RealtimeSession(
         proc, io, report_sec=args.report_sec,
-        prefill_samples=int(round(sr * args.prefill_ms / 1000.0)),
+        prefill_samples=int(round(sr * cushion_ms / 1000.0)),
     )
     try:
         print(io.describe_devices())

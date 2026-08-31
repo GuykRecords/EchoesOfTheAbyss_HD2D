@@ -88,8 +88,14 @@ def make_session(engine=None, prefill_samples=0, io_block=128):
 
 
 def test_session_runs_end_to_end_without_underruns():
-    """The whole live loop, minus the sound card: audio in, audio out, clean."""
-    session = make_session()
+    """The whole live loop, minus the sound card: audio in, audio out, clean.
+
+    Run with a cushion, because that is the configuration this is meant to
+    prove.  With no pre-roll the output ring legitimately reaches empty every
+    cycle, so a single scheduler hiccup produces an underrun -- that is the
+    documented cost of --prefill-ms 0, not a defect to assert against.
+    """
+    session = make_session(prefill_samples=int(SR * 0.008))
     session.run(duration=1.5)
 
     stats = session.io.stats

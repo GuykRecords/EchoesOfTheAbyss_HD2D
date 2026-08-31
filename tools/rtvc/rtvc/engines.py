@@ -79,6 +79,9 @@ class BaseEngine:
         self.infer_ms_last = 0.0
         self.calls = 0
         self._warm = False
+        #: Filled in by :meth:`warmup`; the pre-roll is sized from these.
+        self.warmup_ms_steady = 0.0
+        self.warmup_ms_peak = 0.0
 
     # -- subclass hook ------------------------------------------------------
     def _convert(self, window: np.ndarray, sr: int,
@@ -121,7 +124,7 @@ class BaseEngine:
         return out
 
     def warmup(self, window_samples: int, sr: int, iters: int = 8,
-               tail: Optional[int] = None) -> None:
+               tail: Optional[int] = None) -> float:
         """Run ``iters`` conversions at the real window length before going live.
 
         Skipping this is not free: lazy CUDA context creation, kernel
@@ -138,14 +141,24 @@ class BaseEngine:
         """
         dummy = np.zeros(int(window_samples), dtype=np.float32)
         use_tail = tail if (tail and self.supports_tail) else None
-        for _ in range(max(0, int(iters))):
+        each = []
+        for _ in range(max(1, int(iters))):
+            t0 = time.perf_counter()
             if use_tail:
                 self._convert(dummy, sr, use_tail)
             else:
                 self._convert(dummy, sr)
+            each.append((time.perf_counter() - t0) * 1000.0)
         self._warm = True
+        self.warmup_ms_peak = max(each)
+        # The first iterations are the cold start we are trying to absorb;
+        # only the later ones say anything about steady-state cost, and that
+        # is what the output pre-roll has to cover.
+        steady = each[len(each) // 2:] or each
+        self.warmup_ms_steady = max(steady)
         # Warmup timings are not representative; do not pollute the EMA.
         self.reset_stats()
+        return self.warmup_ms_steady
 
     def reset_stats(self) -> None:
         self.infer_ms_ema = 0.0
@@ -192,23 +205,26 @@ class FixedCostEngine(BaseEngine):
 
     name = "fixed"
 
+    supports_tail = True
+
     def __init__(self, cost_ms: float = 25.0, ema_alpha: float = 0.1,
-                 busy_wait: bool = False) -> None:
+                 spin_ms: float = 2.0) -> None:
         super().__init__(ema_alpha=ema_alpha)
         self.cost_ms = float(cost_ms)
-        self.busy_wait = bool(busy_wait)
-
-    supports_tail = True
+        #: Sleep is quantised by the scheduler even at a 1 ms tick, so the last
+        #: couple of milliseconds are spun instead.  Without this a "25 ms"
+        #: engine actually costs 25-27 ms and the headroom answer is wrong.
+        self.spin_ms = float(spin_ms)
 
     def _convert(self, window: np.ndarray, sr: int,
                  tail: Optional[int] = None) -> np.ndarray:
-        target = self.cost_ms / 1000.0
-        if self.busy_wait:
-            end = time.perf_counter() + target
-            while time.perf_counter() < end:
-                pass
-        else:
-            time.sleep(target)
+        deadline = time.perf_counter() + self.cost_ms / 1000.0
+        coarse = deadline - self.spin_ms / 1000.0
+        now = time.perf_counter()
+        if coarse > now:
+            time.sleep(coarse - now)
+        while time.perf_counter() < deadline:
+            pass
         out = np.asarray(window, dtype=np.float32)
         return out[-tail:].copy() if tail else out.copy()
 
@@ -343,12 +359,17 @@ class RVCTorchEngine(BaseEngine):
 
     @staticmethod
     def _fit(out: np.ndarray, want: int) -> np.ndarray:
-        """Resampling ratios rarely land on an exact integer; absorb ±1 sample."""
+        """Resampling ratios rarely land on an exact integer; absorb the odd sample.
+
+        Always anchored to the **end**: this is a tail whose last sample is
+        "now".  Trimming or padding the far end instead would slide the audio
+        by a sample or two every single block.
+        """
         if out.size > want:
-            return out[:want]
+            return out[-want:]
         if out.size < want:
-            pad = np.full(want - out.size, out[-1] if out.size else 0.0, dtype=np.float32)
-            return np.concatenate((out, pad))
+            pad = np.full(want - out.size, out[0] if out.size else 0.0, dtype=np.float32)
+            return np.concatenate((pad, out))
         return out
 
 
