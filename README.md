@@ -25,5 +25,5 @@ git subtree split --prefix=tools/rtvc -b rtvc-only
 
 → [`tools/rtvc/README.md`](tools/rtvc/README.md)
 
-音声デバイスも GPU も無い環境（CI・クラウド）でも回るテストが 95 件あり、
+音声デバイスも GPU も無い環境（CI・クラウド）でも回るテストが 96 件あり、
 `tools/rtvc/**` が変更されるたびに GitHub Actions で自動実行されます。

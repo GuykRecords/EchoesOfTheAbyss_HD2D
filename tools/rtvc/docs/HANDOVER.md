@@ -23,11 +23,14 @@
 
 ---
 
-## 実測ベースライン（WASAPI 共有 / in=23 / out=22）
+## 実測ベースライン（WASAPI 共有 / INZONE Buds Chat mic → CABLE Input）
+
+**2026-08-31 にリポジトリ版で再現確認済み。内訳まで完全一致。**
 
 | 構成 | TOTAL | RTF | under/over/drop |
 |---|---|---|---|
-| passthrough B32 / X8 | **94.67 ms** | 0.01 | 0 / 0 / 0 |
+| passthrough B32 / X8 / prefill 8ms | **94.67 ms** | 0.00 | 0 / 0 / 0 |
+| passthrough B32 / X8 / prefill 0（既定） | **86.67 ms** | 0.00 | 0 / 0 / 0 |
 | fixed 25ms B32 / X8 | **126.00 ms** | 0.79 | 0 / 0 / 0 |
 | fixed 25ms B30 / X10 / EXTRA100（RVC 互換窓） | **122.70 ms** | 0.85 | 0 / 0 / 0 |
 
@@ -35,6 +38,17 @@
 
 **RTF 0.85 でも under/over/drop がすべて 0。** CPU 側の余裕は確認済みで、
 残る不確定要素は RVC の実推論時間だけ。
+
+### `out-buf` は買うもので、ついてくるものではない
+
+既定（`--prefill-ms 0`）だと `out-buf 0.00` / TOTAL 86.67ms で走る。**速くなったのではなく、
+出力側の余裕がゼロという意味**で、出力リングは毎周期きっちり空になっている。
+passthrough は推論時間が実質 0 なので成立するが、RVC を載せて推論時間がばらつけば
+ここが最初に破綻する。
+
+`--prefill-ms 8` を足すと `out-buf 8.00` / TOTAL 94.67ms になる。この 8ms は
+遅延として正直に計上される。**RVC では推論時間のばらつき（peak − ema）を目安に
+prefill を決めること。**
 
 ---
 

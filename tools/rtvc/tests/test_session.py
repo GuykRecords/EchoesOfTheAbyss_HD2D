@@ -402,3 +402,19 @@ def test_device_table_can_be_narrowed_to_one_host_api(stub_devices):
     assert "Windows WASAPI" in text
     assert "Windows WDM-KS" not in text
     assert "Prefer names" in text
+
+
+def test_out_buf_is_not_measured_before_the_cushion_is_down():
+    """The first report used to read 0.00 because it spanned the startup gap."""
+    io = FakeIO()
+    out = np.zeros(io.blocksize, dtype=np.float32)
+    for _ in range(20):
+        io._callback(np.zeros(io.blocksize, dtype=np.float32), out, io.blocksize,
+                     None, FakeStatus())
+    assert io.take_out_min_fill() == 0, "nothing measured yet is reported as 0"
+
+    io.counting = True
+    io.out_ring.write(np.ones(2000, dtype=np.float32))
+    io._callback(np.zeros(io.blocksize, dtype=np.float32), out, io.blocksize,
+                 None, FakeStatus())
+    assert io.take_out_min_fill() > 0, "steady-state occupancy must be reported"

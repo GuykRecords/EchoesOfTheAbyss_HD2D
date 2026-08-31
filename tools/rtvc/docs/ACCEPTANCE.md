@@ -11,7 +11,7 @@
 
 ```bash
 cd tools/rtvc
-python -m pytest tests/ -q      # 95 件 / 約 10 秒
+python -m pytest tests/ -q      # 96 件 / 約 10 秒
 ```
 
 | # | 条件 | 判定するテスト |
@@ -37,21 +37,25 @@ python -m pytest tests/ -q      # 95 件 / 約 10 秒
 
 ---
 
-## A-2. 実機ベースラインの再現（判定可能・手動）
+## A-2. 実機ベースラインの再現 — ✅ **合格済み（2026-08-31）**
 
 ```powershell
-python realtime.py --engine passthrough --in-device 23 --out-device 22 `
-  --sr 48000 --io-block 128 --block-ms 32 --crossfade-ms 8
+python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
+  --out-device "CABLE Input" --duration 12 --prefill-ms 8
 ```
 
-| # | 条件 | 合格ライン |
-|---|---|---|
-| 1 | `TOTAL` | **94.67ms** ± 10ms |
-| 2 | `under` / `over` / `drop` | すべて 0 |
-| 3 | 内訳が既知の値と整合 | in-dev 22.00 / block 32 / xfade 8 / out-dev 24.67 前後 |
-| 4 | `scheduler timer: 1ms (raised)` と表示される | Windows のみ |
+> **デバイスは番号ではなく名前で指定する。** index は Windows が再列挙するたびに
+> ずれる（実際にこの検証中、有線マイクの抜き挿しとワイヤレスのスリープで 2 回ずれた）。
 
-**1 つでも外れたら、次の計測に進まない。**
+| # | 条件 | 合格ライン | 実測 |
+|---|---|---|---|
+| 1 | `TOTAL` | 94.67ms ± 10ms | **94.67ms** |
+| 2 | `under` / `over` / `drop` | すべて 0 | **0 / 0 / 0** |
+| 3 | 内訳が既知の値と整合 | in-dev 22.00 / block 32 / xfade 8 / out-buf 8 / out-dev 24.67 | **完全一致** |
+| 4 | `scheduler timer: 1ms (raised)` | 表示される | **表示された** |
+
+`--prefill-ms` を省くと `out-buf 0.00` / TOTAL 86.67ms になる。速くなったのではなく
+**余裕がゼロ**という意味なので、RVC を載せるときは推論のばらつき分を prefill で買う。
 
 ---
 

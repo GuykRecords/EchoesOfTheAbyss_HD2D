@@ -268,9 +268,14 @@ class AudioIO:
             else:
                 outdata[:] = chunk
 
-        fill = self.out_ring.available
-        if self._out_min_fill is None or fill < self._out_min_fill:
-            self._out_min_fill = fill
+        # Same rule as the under/overrun counters: before the worker has
+        # produced anything the ring is legitimately empty and the pre-roll is
+        # not down yet, so measuring it there reports a 0 that never happened
+        # in steady state.
+        if self.counting:
+            fill = self.out_ring.available
+            if self._out_min_fill is None or fill < self._out_min_fill:
+                self._out_min_fill = fill
 
     def take_out_min_fill(self) -> int:
         """Minimum output-ring occupancy observed since the previous call.
