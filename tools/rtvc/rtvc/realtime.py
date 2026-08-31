@@ -468,11 +468,20 @@ def _write_wav(path: str, sr: int, data: np.ndarray) -> None:
 # ---------------------------------------------------------------------------
 
 
+class _Help(argparse.ArgumentDefaultsHelpFormatter):
+    """Show defaults, except the ones that are resolved later from --engine."""
+
+    def _get_help_string(self, action):
+        if action.default is None:
+            return action.help
+        return super()._get_help_string(action)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="realtime.py",
         description="Realtime voice-conversion I/O and latency measurement tool.",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        formatter_class=_Help,
     )
     p.add_argument("--list-devices", action="store_true",
                    help="print the audio device table and exit")
