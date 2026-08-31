@@ -1,0 +1,5 @@
+# Runtime dependencies for the measurement tool (no ML stack required).
+numpy>=1.23
+scipy>=1.10
+soxr>=0.3
+sounddevice>=0.4      # needs PortAudio; not required for --offline

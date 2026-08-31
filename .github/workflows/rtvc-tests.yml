@@ -1,0 +1,49 @@
+name: rtvc tests
+
+# The realtime voice-conversion tool lives in tools/rtvc and is independent of
+# the Unity project, so it only runs when that directory changes.
+on:
+  push:
+    paths:
+      - "tools/rtvc/**"
+      - ".github/workflows/rtvc-tests.yml"
+  pull_request:
+    paths:
+      - "tools/rtvc/**"
+      - ".github/workflows/rtvc-tests.yml"
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: tools/rtvc
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: tools/rtvc/requirements-dev.txt
+
+      # sounddevice/PortAudio is deliberately not installed: the suite must
+      # keep passing on a machine with no audio stack at all.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy soxr pytest
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Offline pipeline smoke test
+        run: |
+          python realtime.py --offline --offline-seconds 5 --engine passthrough --warmup 2
+          python realtime.py --offline --offline-seconds 2 --engine fixed --fixed-cost-ms 5 --warmup 1

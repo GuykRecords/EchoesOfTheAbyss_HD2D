@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rtvc"
+version = "0.1.0"
+description = "Realtime voice-conversion I/O, DSP and latency measurement"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["numpy>=1.23", "scipy>=1.10", "soxr>=0.3"]
+
+[project.optional-dependencies]
+device = ["sounddevice>=0.4"]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+rtvc = "rtvc.realtime:main"
+
+[tool.setuptools.packages.find]
+include = ["rtvc*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ""
