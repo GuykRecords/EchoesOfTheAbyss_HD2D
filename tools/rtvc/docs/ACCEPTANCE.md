@@ -27,6 +27,11 @@ python -m pytest tests/ -q      # 132 件 / 約 10 秒
 | 9 | 無音ストリームが「満点」に見えない | `test_a_silent_stream_is_an_error_not_a_perfect_score` |
 | 10 | warmup が本番と同じ窓長・同じ tail で走る | `test_warmup_uses_the_same_tail_as_the_live_loop` |
 
+> **テストは 1ms のスケジューラ刻みを前提にする。** `conftest.py` がセッション全体で
+> `timeBeginPeriod(1)` を握る。これが無いと Windows の既定 15.6ms 刻みで
+> 「5ms のエンジンが 16ms」「2.67ms 周期のフィーダが 4 分の 1 の速度」になり、
+> **コードは正しいのにテストだけ落ちる**（実際に `.venv-rvc` で 4 件落ちた）。
+
 **#3 が中心。** passthrough なら出力は
 「入力を X サンプル遅らせ、ブロック境界の X サンプルに等パワー窓の和を掛けたもの」に
 **厳密に一致する**はず。聴感ではなく算数で判定している。

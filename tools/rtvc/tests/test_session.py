@@ -95,12 +95,20 @@ def test_session_runs_end_to_end_without_underruns():
     cycle, so a single scheduler hiccup produces an underrun -- that is the
     documented cost of --prefill-ms 0, not a defect to assert against.
     """
+    duration = 1.5
     session = make_session(prefill_samples=int(SR * 0.008))
-    session.run(duration=1.5)
+    session.run(duration=duration)
 
     stats = session.io.stats
     assert stats.callbacks > 100, "the feeder never ran"
-    assert session.proc.engine.calls > 20, "the worker produced almost nothing"
+    # Blocks are 32ms, so a 1.5s run is ~46 of them. Allow generous slack for a
+    # loaded machine, but not so much that a feeder running at a fraction of
+    # realtime would pass.
+    expected = duration * 1000.0 / session.proc.block_ms
+    assert session.proc.engine.calls > expected * 0.6, (
+        f"the worker produced {session.proc.engine.calls} blocks, expected "
+        f"around {expected:.0f}"
+    )
     assert stats.underflow == 0, f"{stats.underflow} underruns on a passthrough run"
     assert stats.dropped_in == 0 and stats.dropped_out == 0
 
