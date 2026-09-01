@@ -96,7 +96,8 @@ def test_a_missing_root_is_reported_rather_than_crashing(tmp_path, capsys):
 @pytest.fixture
 def mystery(tmp_path):
     root = tmp_path / "project"
-    folder = root / "discord-voice"
+    # A name the inventory has no entry for, which is the case peek exists for.
+    folder = root / "some-old-experiment"
     (folder / "src").mkdir(parents=True)
     (folder / ".git").mkdir()
     (folder / ".git" / "config").write_text(
@@ -139,5 +140,57 @@ def test_peek_without_names_covers_everything_unclassified(mystery, capsys):
     (root / ".venv").mkdir()
     assert inv.main(["--root", str(root), "--peek"]) == 0
     out = capsys.readouterr().out
-    assert "discord-voice" in out
+    assert "some-old-experiment" in out
     assert "=" * 70 in out
+
+
+# --------------------------------------------------------------------------
+# Reading documents, and finding the copies of them
+# --------------------------------------------------------------------------
+
+
+def test_utf8_documents_are_read_as_utf8(tmp_path, capsys):
+    """Windows defaults to cp932, which silently mangles every Japanese doc."""
+    folder = tmp_path / "docs"
+    folder.mkdir()
+    (folder / "README.md").write_text("# 土台ドキュメント\n作成日: 2026-07-06\n",
+                                      encoding="utf-8")
+    inv.peek(folder)
+    out = capsys.readouterr().out
+    assert "# 土台ドキュメント" in out
+    assert "繝" not in out, "cp932 mojibake"
+
+
+def test_duplicate_documents_are_found_across_folders(tmp_path):
+    root = tmp_path / "project"
+    (root / "handoff" / "docs").mkdir(parents=True)
+    (root / "saikyo").mkdir()
+    body = "# 土台\n本文\n"
+    for rel in ("foundation.md", "handoff/docs/foundation.md", "saikyo/foundation.md"):
+        (root / rel).write_text(body, encoding="utf-8")
+    (root / "saikyo" / "other.md").write_text("違う中身\n", encoding="utf-8")
+
+    groups = inv.find_duplicates(root)
+    assert len(groups) == 1
+    paths = sorted(next(iter(groups.values())))
+    assert len(paths) == 3
+    assert any("saikyo" in p for p in paths)
+
+
+def test_duplicate_search_skips_environments_and_empty_files(tmp_path):
+    """Cleanup is about documents; a venv full of identical stubs is noise."""
+    root = tmp_path / "project"
+    (root / ".venv" / "a").mkdir(parents=True)
+    (root / "RVC").mkdir()
+    (root / ".venv" / "a" / "x.py").write_text("same\n")
+    (root / "RVC" / "x.py").write_text("same\n")
+    (root / "empty_a.txt").write_text("")
+    (root / "empty_b.txt").write_text("")
+    assert inv.find_duplicates(root) == {}
+
+
+def test_an_archived_directory_is_labelled_as_such(tmp_path):
+    root = tmp_path / "project"
+    (root / "rtvc._archived_20260901").mkdir(parents=True)
+    row = next(r for r in inv.inventory(root) if "archived" in r["name"])
+    assert row["verdict"] == "退避済み"

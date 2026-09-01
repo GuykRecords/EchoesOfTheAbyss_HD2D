@@ -10,13 +10,22 @@
 
 ## 全体像
 
-| 場所 | これから | 理由 |
-|---|---|---|
-| `D:\Claude\Project\.venv` | **残す** | 計測用。numpy 2.x + torch cu128。ここに RVC を入れると壊れる |
-| `D:\Claude\Project\.venv-rvc` | **残す / これから作る** | RVC 専用。numpy 1.23.5 + fairseq |
-| `D:\Claude\Project\RVC` | **残す** | RVC 本体の clone。巨大かつ別ライセンスなのでリポジトリには入れない |
-| `D:\Claude\Project\rtvc` | **退避 → 後で削除** | このリポジトリの `tools/rtvc/` に移管済み |
-| このリポジトリの clone | **新設** | 今後の作業場所 |
+| 場所 | サイズ | これから | 理由 |
+|---|---|---|---|
+| `.venv-rvc` | 6.2 GB | **残す** | RVC 専用。torch 2.7.1+cu128。**rtvc もこちらで動く** |
+| `.venv` | 4.4 GB | **残す** | 計測用 (torch 2.11)。RVC の依存を入れると壊れる |
+| `RVC` | 2.6 GB | **残す** | RVC 本体の clone。巨大かつ別ライセンス |
+| `discord-voice` | 575 MB | **残す** | Discord 用 VC 環境 (VCClient / Beatrice)。rtvc とは別実装 |
+| `ComfyUI` | 50 MB | **残す** | ComfyUI 連携ツールキット。本体は `D:\ComfyUI` で別物 |
+| `Project Saikyo AI Vtuber` | 44 MB | **残す** | GitHub 管理済み |
+| `EchoesOfTheAbyss_HD2D` | — | **残す** | このリポジトリ |
+| `rtvc` | 0.1 MB | ✅ **退避済み** | `rtvc._archived_20260901` |
+| `project_handoff` | 0 MB | **要判断** | AI VTuber の旧引き継ぎ。Saikyo リポジトリと重複の可能性 |
+| `models` | 0 MB | **要判断** | 空 |
+| ルートの `*.md` 2 件 | 0 MB | **要判断** | Saikyo リポジトリ内に同名がある |
+
+**venv・RVC・discord-voice はリポジトリに入れない。** サイズが大きく、環境依存で、
+別ライセンス。Git で管理して得るものが無い。
 
 **venv と RVC 本体はリポジトリに入れない。** サイズが大きく、環境依存で、
 別ライセンス。Git で管理して得るものが無い。
@@ -71,6 +80,15 @@ python scripts\inventory_local.py --peek ComfyUI    # 名前を指定
 **中身を読むのは `.md` / `.txt` だけ**で、しかも名前に `env` `secret` `token` `key`
 `credential` `password` を含むファイルは**名前しか出さない**。棚卸しのために
 認証情報を画面に出す必要はないので。
+
+### Step 2.6. 同じ書類のコピーを探す
+
+```powershell
+python scripts\inventory_local.py --dupes
+```
+
+同一内容のファイルを見つけて並べる。`venv` / `RVC` / 隠しディレクトリは対象外で、
+空ファイルと 5MB 超も除く。**どれが原本かは人間が決める。**
 
 ### Step 3. 差分があったら先に拾う
 

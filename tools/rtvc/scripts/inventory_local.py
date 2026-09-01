@@ -27,9 +27,16 @@ from typing import Dict, List, Optional, Tuple
 # 既知のディレクトリの扱い。判断の根拠を残すために、理由まで書いておく。
 KNOWN: Dict[str, Tuple[str, str]] = {
     ".venv": ("残す", "計測用 venv。RVC の依存を入れると壊れる"),
-    ".venv-rvc": ("残す", "RVC 専用 venv。torch 2.7.1+cu128"),
+    ".venv-rvc": ("残す", "RVC 専用 venv。torch 2.7.1+cu128。rtvc もこちらで動く"),
     "RVC": ("残す", "RVC 本体の clone。巨大かつ別ライセンスなのでリポジトリには入れない"),
     "rtvc": ("要判断", "リポジトリ tools/rtvc へ移管済み。差分が無ければ退避してよい"),
+    # 2026-09-01 の --peek で正体が判明したもの
+    "EchoesOfTheAbyss_HD2D": ("残す", "このリポジトリの clone。GitHub 管理済み"),
+    "Project Saikyo AI Vtuber": ("残す", "GitHub 管理済み (GuykRecords/project-saikyo-ai-vtuber)"),
+    "discord-voice": ("残す", "Discord 用 VC 環境 (VCClient/Beatrice)。rtvc とは別実装"),
+    "ComfyUI": ("残す", "ComfyUI 連携ツールキット。本体は D:\\ComfyUI で別物"),
+    "project_handoff": ("要判断", "AI VTuber の旧引き継ぎ。Saikyo リポジトリと重複の可能性"),
+    "models": ("要判断", "空のディレクトリ"),
 }
 
 SKIP_DIRS = {"__pycache__", ".pytest_cache", ".git", "node_modules"}
@@ -82,7 +89,11 @@ def relative_files(root: Path) -> List[Path]:
 def inventory(root: Path) -> List[dict]:
     rows = []
     for entry in sorted(root.iterdir(), key=lambda p: p.name.lower()):
-        verdict, why = KNOWN.get(entry.name, ("未分類", "心当たりが無ければ中身を確認してから判断"))
+        if "._archived_" in entry.name:
+            verdict, why = ("退避済み", "様子を見て問題なければ手で削除してよい")
+        else:
+            verdict, why = KNOWN.get(entry.name,
+                                     ("未分類", "心当たりが無ければ中身を確認してから判断"))
         try:
             mtime = dt.datetime.fromtimestamp(entry.stat().st_mtime).strftime("%Y-%m-%d")
         except OSError:
@@ -119,6 +130,19 @@ PEEK_TEXT_SUFFIXES = {".md", ".txt", ".rst"}
 SECRET_HINTS = ("env", "secret", "token", "key", "credential", "password")
 
 
+def read_lines(path: Path, limit: int) -> List[str]:
+    """テキストの冒頭を読む。**UTF-8 と明示すること。**
+
+    Windows の既定は cp932 で、UTF-8 の日本語ドキュメントを黙って化けさせる
+    （実際にそれで棚卸しの出力が全部読めなくなった）。
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ["(読めない)"]
+    return text.splitlines()[:limit]
+
+
 def looks_secret(name: str) -> bool:
     low = name.lower()
     return any(h in low for h in SECRET_HINTS)
@@ -129,7 +153,7 @@ def git_remote(path: Path) -> Optional[str]:
     if not config.is_file():
         return None
     try:
-        for line in config.read_text(errors="replace").splitlines():
+        for line in config.read_text(encoding="utf-8", errors="replace").splitlines():
             line = line.strip()
             if line.startswith("url = "):
                 return line[len("url = "):]
@@ -144,7 +168,7 @@ def peek(path: Path, max_entries: int = 20, max_lines: int = 8) -> None:
     if path.is_file():
         print(f"  ファイル {path.stat().st_size} bytes")
         if path.suffix.lower() in PEEK_TEXT_SUFFIXES and not looks_secret(path.name):
-            for line in path.read_text(errors="replace").splitlines()[:max_lines]:
+            for line in read_lines(path, max_lines):
                 print(f"    | {line}")
         return
 
@@ -189,12 +213,41 @@ def peek(path: Path, max_entries: int = 20, max_lines: int = 8) -> None:
         if (e.is_file() and e.suffix.lower() in PEEK_TEXT_SUFFIXES
                 and not looks_secret(e.name)):
             print(f"  --- {e.name} の冒頭 ---")
-            try:
-                for line in e.read_text(errors="replace").splitlines()[:max_lines]:
-                    print(f"    | {line}")
-            except OSError:
-                print("    | (読めない)")
+            for line in read_lines(e, max_lines):
+                print(f"    | {line}")
             break
+
+
+# --------------------------------------------------------------------------
+# 同じ中身のファイルを探す（--dupes）
+# --------------------------------------------------------------------------
+
+#: 中身が巨大なもの・環境ものは重複探索の対象外。片付けたいのは書類の方。
+DUPES_SKIP_TOP = {".venv", ".venv-rvc", "RVC", "node_modules"}
+DUPES_MAX_BYTES = 5 * 1024 * 1024
+
+
+def find_duplicates(root: Path, max_bytes: int = DUPES_MAX_BYTES) -> Dict[str, List[str]]:
+    """同一内容のファイルを探す。どのコピーが原本かは人間が決める。"""
+    by_hash: Dict[str, List[str]] = {}
+    for entry in sorted(root.iterdir()):
+        if entry.name in DUPES_SKIP_TOP or entry.name.startswith("."):
+            continue
+        targets = [entry] if entry.is_file() else [
+            root / entry.name / rel for rel in relative_files(entry)
+        ]
+        for path in targets:
+            try:
+                if not path.is_file() or path.stat().st_size == 0:
+                    continue
+                if path.stat().st_size > max_bytes:
+                    continue
+            except OSError:
+                continue
+            digest = sha256(path)
+            if digest:
+                by_hash.setdefault(digest, []).append(str(path.relative_to(root)))
+    return {d: paths for d, paths in by_hash.items() if len(paths) > 1}
 
 
 def print_table(rows: List[dict]) -> None:
@@ -238,6 +291,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="退避案をこのパスに書き出す（実行はしない）")
     ap.add_argument("--peek", nargs="*", default=None, metavar="NAME",
                     help="中身を覗く。名前を省くと『未分類』のもの全部")
+    ap.add_argument("--dupes", action="store_true",
+                    help="同じ中身のファイルを探す（venv と RVC は対象外）")
     args = ap.parse_args(argv)
 
     print("=== ローカル棚卸し（読み取り専用・何も削除しません）===")
@@ -251,6 +306,19 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     rows = inventory(args.root)
     print_table(rows)
+
+    if args.dupes:
+        groups = find_duplicates(args.root)
+        print(f"\n=== 同じ中身のファイル ===")
+        if not groups:
+            print("  重複はありません。")
+            return 0
+        for paths in sorted(groups.values(), key=lambda p: p[0]):
+            print()
+            for path in sorted(paths):
+                print(f"  {path}")
+        print(f"\n{len(groups)} 組。どれを原本として残すかは人間が決めること。")
+        return 0
 
     if args.peek is not None:
         names = args.peek or [r["name"] for r in rows if r["verdict"] == "未分類"]
