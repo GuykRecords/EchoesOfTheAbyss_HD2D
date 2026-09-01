@@ -1,2 +1,3 @@
 -r requirements.txt
 pytest>=7.0
+soundfile>=0.12   # prepare_dataset.py が mp3/flac を読むのに使う

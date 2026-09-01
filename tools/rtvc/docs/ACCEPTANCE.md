@@ -11,7 +11,7 @@
 
 ```bash
 cd tools/rtvc
-python -m pytest tests/ -q      # 148 件 / 約 30 秒
+python -m pytest tests/ -q      # 164 件 / 約 50 秒
 ```
 
 | # | 条件 | 判定するテスト |
@@ -91,7 +91,8 @@ python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
 前提：話者モデル `.pth` がまだ無い。`--engine rvc` は `exit=4` で正しく停止する。
 作り方は [`VOICE_TRAINING.md`](VOICE_TRAINING.md)。
 
-**訓練前に `python scripts\check_dataset.py <録音フォルダ>` が `合格` を出すこと。**
+**訓練前に `python scripts\check_dataset.py <素材フォルダ>` が `合格` を出すこと。**
+既存音源から作る場合は `prepare_dataset.py` で切り分けてから判定する。
 素材が不合格のまま訓練すると、3 時間かけて悪いモデルができるだけ。
 
 | # | 条件 | 合格ライン |

@@ -91,14 +91,22 @@ def analyse_file(path: Path, thresholds: dict = THRESHOLDS) -> FileReport:
     dc = float(np.mean(x)) if x.size else 0.0
     clipped = int(np.count_nonzero(np.abs(x) >= 0.999))
 
-    # 20ms ごとの RMS。静かな方から 10% を「その録音の環境音」とみなす。
+    # 環境音 = 「一番静かな連続 100ms」。
+    # 静かな方から一定割合、という取り方だと、無音の多い少ないで当たり外れが
+    # 出る（無音が 8% しかないファイルでは 10% の中に喋りが混じる）。
+    # 連続した最小区間なら、どこかに 0.1 秒でも間があればそこを掴む。
     frame = max(1, int(sr * 0.02))
     usable = (x.size // frame) * frame
     if usable:
         frames = x[:usable].reshape(-1, frame)
         frame_rms = np.sqrt(np.mean(np.square(frames, dtype=np.float64), axis=1))
-        quiet = np.sort(frame_rms)[:max(1, len(frame_rms) // 10)]
-        noise_floor = float(np.mean(quiet))
+        window = min(5, len(frame_rms))  # 5 フレーム = 100ms
+        if window > 1:
+            kernel = np.ones(window) / window
+            smoothed = np.convolve(frame_rms, kernel, mode="valid")
+        else:
+            smoothed = frame_rms
+        noise_floor = float(np.min(smoothed))
         silence_ratio = float(np.mean(frame_rms < rms * 0.05)) if rms else 1.0
     else:
         noise_floor, silence_ratio = 0.0, 1.0

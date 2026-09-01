@@ -178,7 +178,8 @@ python realtime.py --offline --offline-input voice.wav --offline-out converted.w
 | `rtvc/timing.py` | Windows のスケジューラ刻みを 1ms に上げる（既定 ~15.6ms では warmup が測れない） |
 | `rtvc/rvc_backend.py` | RVC 側のグルー。**唯一 torch と RVC に依存**する（遅延 import） |
 | `scripts/inventory_local.py` | ローカル作業ディレクトリの棚卸し（読み取り専用） |
-| `scripts/check_dataset.py` | 学習用に録った音声が使い物になるかの判定（読み取り専用） |
+| `scripts/prepare_dataset.py` | 既存の音源を学習用の 48k モノラル WAV に切り分ける（入力は変更しない） |
+| `scripts/check_dataset.py` | 学習用の音声が使い物になるかの判定（読み取り専用） |
 | `realtime.py` | 上を呼ぶだけのランチャ。`python realtime.py ...` がそのまま動く |
 | `tests/` | 音声デバイス無しで回る受け入れテスト |
 
@@ -194,7 +195,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-148 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
+164 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
 （`.github/workflows/rtvc-tests.yml`）。
 
 うち 9 件（`tests/test_session.py`）は、PortAudio のコールバックを偽のフィーダから
