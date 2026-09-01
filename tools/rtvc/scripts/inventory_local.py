@@ -222,8 +222,15 @@ def peek(path: Path, max_entries: int = 20, max_lines: int = 8) -> None:
 # 同じ中身のファイルを探す（--dupes）
 # --------------------------------------------------------------------------
 
-#: 中身が巨大なもの・環境ものは重複探索の対象外。片付けたいのは書類の方。
+#: 最上位で丸ごと除くもの。
 DUPES_SKIP_TOP = {".venv", ".venv-rvc", "RVC", "node_modules"}
+#: **深さを問わず**除くディレクトリ名。片付けたいのは書類であって、
+#: 配布物に同梱された同じライブラリが何度も出てきても何の役にも立たない
+#: （最上位しか見ていなかったとき discord-voice/.venv だけで 100 組以上出た）。
+DUPES_SKIP_ANY = {
+    ".venv", "venv", "site-packages", "node_modules", "__pycache__", ".git",
+    "_internal", "_vendor", "dist", "build", "Scripts", "bin",
+}
 DUPES_MAX_BYTES = 5 * 1024 * 1024
 
 
@@ -235,6 +242,7 @@ def find_duplicates(root: Path, max_bytes: int = DUPES_MAX_BYTES) -> Dict[str, L
             continue
         targets = [entry] if entry.is_file() else [
             root / entry.name / rel for rel in relative_files(entry)
+            if not (set(rel.parts[:-1]) & DUPES_SKIP_ANY)
         ]
         for path in targets:
             try:
@@ -261,22 +269,29 @@ def print_table(rows: List[dict]) -> None:
               f"{r['mtime']:<10} | {r['verdict']} | {r['why']}")
 
 
-def write_proposal(path: Path, old: Path) -> None:
+def write_proposal(path: Path, targets: List[Path]) -> None:
+    """退避案を書き出す。**rename しかしない。** 実行はしない。"""
     stamp = dt.date.today().strftime("%Y%m%d")
-    archive = f"{old.name}._archived_{stamp}"
-    path.write_text(
-        "# 自動生成された「退避案」。実行前に必ず中身を読むこと。\n"
-        "# 削除ではなく rename で退避する。1〜2 週間動かして問題が無ければ手で消す。\n"
-        "$ErrorActionPreference = 'Stop'\n"
-        f"$old = '{old}'\n"
-        "if (Test-Path -LiteralPath $old) {\n"
-        f"    Rename-Item -LiteralPath $old -NewName '{archive}'\n"
-        f"    Write-Host '退避しました: {archive}'\n"
-        "} else {\n"
-        "    Write-Host \"$old は存在しません。何もしません。\"\n"
-        "}\n",
-        encoding="utf-8-sig",  # Windows PowerShell 5.1 は BOM が無いと日本語を誤読する
-    )
+    lines = [
+        "# 自動生成された「退避案」。実行前に必ず中身を読むこと。",
+        "# 削除ではなく rename で退避する。1〜2 週間動かして問題が無ければ手で消す。",
+        "$ErrorActionPreference = 'Stop'",
+        "",
+    ]
+    for target in targets:
+        archive = f"{target.name}._archived_{stamp}"
+        lines += [
+            f"$old = '{target}'",
+            "if (Test-Path -LiteralPath $old) {",
+            f"    Rename-Item -LiteralPath $old -NewName '{archive}'",
+            f"    Write-Host '退避しました: {archive}'",
+            "} else {",
+            '    Write-Host "$old は存在しません。何もしません。"',
+            "}",
+            "",
+        ]
+    path.write_text("\n".join(lines),
+                    encoding="utf-8-sig")  # PowerShell 5.1 は BOM 無しだと日本語を誤読する
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -291,6 +306,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="退避案をこのパスに書き出す（実行はしない）")
     ap.add_argument("--peek", nargs="*", default=None, metavar="NAME",
                     help="中身を覗く。名前を省くと『未分類』のもの全部")
+    ap.add_argument("--archive", nargs="+", default=None, metavar="NAME",
+                    help="--proposal に含める退避対象（既定: 旧作業ディレクトリのみ）")
     ap.add_argument("--dupes", action="store_true",
                     help="同じ中身のファイルを探す（venv と RVC は対象外）")
     args = ap.parse_args(argv)
@@ -334,6 +351,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     print(f"\n=== 旧 {args.old_name} とリポジトリ版の比較 ===")
     if not old.is_dir():
         print(f"{old} は存在しません。移管済みか、まだ作っていないかのどちらかです。")
+        if args.proposal and args.archive:
+            targets = [args.root / name for name in args.archive]
+            write_proposal(args.proposal, targets)
+            print(f"\n退避案を書き出しました: {args.proposal}")
+            print("中身を読んでから、自分で実行してください。このスクリプトは実行しません。")
         return 0
 
     same, differ, local_only = compare(old, args.repo)
@@ -351,7 +373,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("\nローカル固有のものはありません。旧ディレクトリは退避してよい状態です。")
 
     if args.proposal:
-        write_proposal(args.proposal, old)
+        targets = ([args.root / name for name in args.archive] if args.archive
+                   else [old])
+        missing = [t for t in targets if not t.exists()]
+        if missing:
+            print("\n注意: 見つからない退避対象があります: "
+                  + ", ".join(t.name for t in missing), file=sys.stderr)
+        write_proposal(args.proposal, targets)
         print(f"\n退避案を書き出しました: {args.proposal}")
         print("中身を読んでから、自分で実行してください。このスクリプトは実行しません。")
 

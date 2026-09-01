@@ -5,6 +5,7 @@ comparison is tested rather than trusted.
 """
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -194,3 +195,49 @@ def test_an_archived_directory_is_labelled_as_such(tmp_path):
     (root / "rtvc._archived_20260901").mkdir(parents=True)
     row = next(r for r in inv.inventory(root) if "archived" in r["name"])
     assert row["verdict"] == "退避済み"
+
+
+def test_duplicate_search_skips_environments_at_any_depth(tmp_path):
+    """A bundled app carries its own .venv; its vendored copies are pure noise."""
+    root = tmp_path / "project"
+    nested = root / "discord-voice" / ".venv" / "Lib" / "site-packages" / "idna"
+    vendored = root / "discord-voice" / "vcclient" / "dist" / "main" / "_internal"
+    nested.mkdir(parents=True)
+    vendored.mkdir(parents=True)
+    (nested / "core.py").write_text("vendored library\n")
+    (vendored / "core.py").write_text("vendored library\n")
+    (root / "discord-voice" / "README.md").write_text("real doc\n")
+    (root / "notes.md").write_text("real doc\n")
+
+    groups = inv.find_duplicates(root)
+    assert len(groups) == 1, "only the two real documents should pair up"
+    paths = sorted(next(iter(groups.values())))
+    assert paths == ["discord-voice/README.md".replace("/", os.sep), "notes.md"]
+
+
+def test_a_proposal_can_archive_several_things_at_once(tmp_path):
+    root = tmp_path / "project"
+    (root / "project_handoff").mkdir(parents=True)
+    (root / "models").mkdir()
+    (root / "old.md").write_text("x")
+    proposal = tmp_path / "cleanup.ps1"
+
+    inv.write_proposal(proposal, [root / "project_handoff", root / "models",
+                                  root / "old.md"])
+    text = proposal.read_text(encoding="utf-8-sig")
+    assert text.count("Rename-Item") == 3
+    assert "Remove-Item" not in text
+    for name in ("project_handoff", "models", "old.md"):
+        assert name in text
+    assert (root / "project_handoff").is_dir(), "writing a proposal changes nothing"
+
+
+def test_archive_targets_that_do_not_exist_are_flagged(tmp_path, capsys):
+    root = tmp_path / "project"
+    (root / "rtvc").mkdir(parents=True)
+    (root / "models").mkdir()
+    proposal = tmp_path / "cleanup.ps1"
+    inv.main(["--root", str(root), "--repo", str(tmp_path / "repo"),
+              "--proposal", str(proposal), "--archive", "models", "ghost"])
+    assert "ghost" in capsys.readouterr().err
+    assert proposal.exists(), "the rest of the proposal is still written"

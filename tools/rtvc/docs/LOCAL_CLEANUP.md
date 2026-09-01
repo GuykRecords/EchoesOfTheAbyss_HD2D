@@ -87,8 +87,13 @@ python scripts\inventory_local.py --peek ComfyUI    # 名前を指定
 python scripts\inventory_local.py --dupes
 ```
 
-同一内容のファイルを見つけて並べる。`venv` / `RVC` / 隠しディレクトリは対象外で、
-空ファイルと 5MB 超も除く。**どれが原本かは人間が決める。**
+同一内容のファイルを見つけて並べる。**どれが原本かは人間が決める。**
+
+対象外は「書類ではないもの」全般：`venv` / `site-packages` / `_internal` / `_vendor` /
+`dist` / `build` / `node_modules` などは**深さを問わず**除く。空ファイルと 5MB 超も除く。
+
+> 最初はこれを最上位でしか判定しておらず、`discord-voice` に同梱された `.venv` と
+> PyInstaller のバンドルだけで 100 組以上の「重複」が出て、肝心の書類が埋もれた。
 
 ### Step 3. 差分があったら先に拾う
 
@@ -132,7 +137,12 @@ python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
 ### Step 5. 旧ディレクトリを退避する（削除ではない）
 
 ```powershell
+# 旧作業ディレクトリだけ
 python scripts\inventory_local.py --proposal cleanup-proposal.ps1
+
+# 複数まとめて
+python scripts\inventory_local.py --proposal cleanup-proposal.ps1 `
+  --archive project_handoff models ai_vtuber_project_foundation.md character_spec_v2.md
 
 # 中身を読む
 type cleanup-proposal.ps1
