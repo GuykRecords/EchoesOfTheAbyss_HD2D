@@ -3,7 +3,12 @@ import sys
 
 import pytest
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_ROOT = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _ROOT)
+# scripts/ is not a package; put it on the path so the helpers can be
+# imported by name instead of exec'd from a file spec -- @dataclass needs
+# its module present in sys.modules to resolve annotations.
+sys.path.insert(0, os.path.join(_ROOT, "scripts"))
 
 
 @pytest.fixture(scope="session", autouse=True)

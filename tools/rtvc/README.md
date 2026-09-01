@@ -178,6 +178,7 @@ python realtime.py --offline --offline-input voice.wav --offline-out converted.w
 | `rtvc/timing.py` | Windows のスケジューラ刻みを 1ms に上げる（既定 ~15.6ms では warmup が測れない） |
 | `rtvc/rvc_backend.py` | RVC 側のグルー。**唯一 torch と RVC に依存**する（遅延 import） |
 | `scripts/inventory_local.py` | ローカル作業ディレクトリの棚卸し（読み取り専用） |
+| `scripts/check_dataset.py` | 学習用に録った音声が使い物になるかの判定（読み取り専用） |
 | `realtime.py` | 上を呼ぶだけのランチャ。`python realtime.py ...` がそのまま動く |
 | `tests/` | 音声デバイス無しで回る受け入れテスト |
 
@@ -193,7 +194,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-132 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
+148 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
 （`.github/workflows/rtvc-tests.yml`）。
 
 うち 9 件（`tests/test_session.py`）は、PortAudio のコールバックを偽のフィーダから
@@ -216,6 +217,7 @@ passthrough なら出力は「入力を X だけ遅らせて、ブロック境�
 | [`docs/HANDOVER.md`](docs/HANDOVER.md) | 環境・実測値・次のタスク・声の権利（引き継ぎメモ） |
 | [`docs/RVC_INTEGRATION.md`](docs/RVC_INTEGRATION.md) | RVC 本体の導入手順と `RVCTorchEngine` の繋ぎ方 |
 | [`docs/LOCAL_CLEANUP.md`](docs/LOCAL_CLEANUP.md) | 家の PC の `D:\Claude\Project` 配下を整理する手順 |
+| [`docs/VOICE_TRAINING.md`](docs/VOICE_TRAINING.md) | 話者モデルの作り方（録音・判定・訓練・接続） |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md) | 完了条件（合否を人間が判定できる形で固定したもの） |
 
 ---

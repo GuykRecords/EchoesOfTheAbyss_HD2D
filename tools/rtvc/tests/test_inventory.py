@@ -4,18 +4,10 @@ Getting this wrong loses work that only exists on one machine, so the
 comparison is tested rather than trusted.
 """
 
-import importlib.util
 import os
-from pathlib import Path
 
+import inventory_local as inv
 import pytest
-
-_SPEC = importlib.util.spec_from_file_location(
-    "inventory_local",
-    Path(__file__).resolve().parent.parent / "scripts" / "inventory_local.py",
-)
-inv = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(inv)
 
 
 @pytest.fixture

@@ -105,6 +105,12 @@ import 実測で `rtrvc.RVC` / `infer.hubert` / `SynthesizerTrnMs768NSFsid` / `R
 
 **自分の声で学習する。** これが無いと `--engine rvc` は `exit=4` で正しく停止する。
 
+→ 手順は [`VOICE_TRAINING.md`](VOICE_TRAINING.md)。録音 → `check_dataset.py` で判定 →
+`.venv-train` を別に作る → 訓練 → `assets/weights` に置く。
+
+**モデルのサンプルレートは 48k を選ぶこと。** 40k だと非整数比のリサンプルになり、
+実測で 20dB 損する。
+
 事前学習済みモデル（`assets/pretrained_v2`）はダウンロード済みなので、
 必要なのは自分の声の収録と訓練のみ。他人の RVC モデルを落として計測することは
 していない（→ 声の権利）。
