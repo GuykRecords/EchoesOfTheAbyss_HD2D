@@ -86,3 +86,58 @@ def test_the_proposal_archives_by_renaming_and_is_not_executed(tree, tmp_path):
 def test_a_missing_root_is_reported_rather_than_crashing(tmp_path, capsys):
     assert inv.main(["--root", str(tmp_path / "nope")]) == 1
     assert "見つかりません" in capsys.readouterr().err
+
+
+# --------------------------------------------------------------------------
+# --peek: work out what an unfamiliar folder is, without reading what it holds
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def mystery(tmp_path):
+    root = tmp_path / "project"
+    folder = root / "discord-voice"
+    (folder / "src").mkdir(parents=True)
+    (folder / ".git").mkdir()
+    (folder / ".git" / "config").write_text(
+        '[remote "origin"]\n\turl = https://github.com/someone/discord-voice\n')
+    (folder / "README.md").write_text("# discord voice bot\n2 行目\n")
+    (folder / "package.json").write_text("{}")
+    (folder / ".env").write_text("DISCORD_TOKEN=super-secret-value\n")
+    (folder / "src" / "bot.js").write_text("console.log(1)\n")
+    return root, folder
+
+
+def test_peek_identifies_a_folder_from_its_markers(mystery, capsys):
+    root, folder = mystery
+    inv.peek(folder)
+    out = capsys.readouterr().out
+    assert "https://github.com/someone/discord-voice" in out
+    assert "Node.js" in out
+    assert "# discord voice bot" in out, "the README is what tells a person what this is"
+
+
+def test_peek_never_prints_the_contents_of_a_secret_looking_file(mystery, capsys):
+    """Names are enough to identify a folder; credentials must not be echoed."""
+    root, folder = mystery
+    inv.peek(folder)
+    out = capsys.readouterr().out
+    assert "super-secret-value" not in out
+    assert "DISCORD_TOKEN" not in out
+
+
+def test_peek_changes_nothing(mystery):
+    root, folder = mystery
+    before = {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+    inv.peek(folder)
+    after = {p: p.read_bytes() for p in folder.rglob("*") if p.is_file()}
+    assert before == after
+
+
+def test_peek_without_names_covers_everything_unclassified(mystery, capsys):
+    root, _ = mystery
+    (root / ".venv").mkdir()
+    assert inv.main(["--root", str(root), "--peek"]) == 0
+    out = capsys.readouterr().out
+    assert "discord-voice" in out
+    assert "=" * 70 in out

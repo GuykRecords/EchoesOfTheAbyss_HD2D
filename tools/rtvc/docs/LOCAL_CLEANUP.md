@@ -52,6 +52,26 @@ python scripts\inventory_local.py
   - `[差分あり]` … ローカルで直した可能性あり。**中身を見る**
   - `[ローカルのみ]` … リポジトリに無いファイル。**中身を見る**
 
+### Step 2.5. 心当たりの無いフォルダの正体を掴む
+
+`未分類` と出たものは、中身を覗いて判断する。
+
+```powershell
+python scripts\inventory_local.py --peek            # 未分類のものを全部
+python scripts\inventory_local.py --peek ComfyUI    # 名前を指定
+```
+
+出るのは「それが何か」を判断するための最小限だけ:
+
+- git の remote URL（clone なら一発で正体が分かる）
+- `package.json` / `requirements.txt` / `pyvenv.cfg` などの目印
+- 直下の一覧、拡張子別の件数、大きいファイル 5 件
+- `README.md` の冒頭数行
+
+**中身を読むのは `.md` / `.txt` だけ**で、しかも名前に `env` `secret` `token` `key`
+`credential` `password` を含むファイルは**名前しか出さない**。棚卸しのために
+認証情報を画面に出す必要はないので。
+
 ### Step 3. 差分があったら先に拾う
 
 `[差分あり]` や `[ローカルのみ]` が出た場合、消す前に中身を確認する。

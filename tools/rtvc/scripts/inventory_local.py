@@ -110,6 +110,93 @@ def compare(old: Path, repo: Path) -> Tuple[List[str], List[str], List[str]]:
     return same, differ, local_only
 
 
+# --------------------------------------------------------------------------
+# 中身を覗く（--peek）
+# --------------------------------------------------------------------------
+
+PEEK_TEXT_SUFFIXES = {".md", ".txt", ".rst"}
+# 秘密が入りがちなファイルは名前だけ出して中身は読まない
+SECRET_HINTS = ("env", "secret", "token", "key", "credential", "password")
+
+
+def looks_secret(name: str) -> bool:
+    low = name.lower()
+    return any(h in low for h in SECRET_HINTS)
+
+
+def git_remote(path: Path) -> Optional[str]:
+    config = path / ".git" / "config"
+    if not config.is_file():
+        return None
+    try:
+        for line in config.read_text(errors="replace").splitlines():
+            line = line.strip()
+            if line.startswith("url = "):
+                return line[len("url = "):]
+    except OSError:
+        pass
+    return "(git リポジトリ・remote 不明)"
+
+
+def peek(path: Path, max_entries: int = 20, max_lines: int = 8) -> None:
+    """1 つのフォルダの正体を掴むための要約。中身は .md などしか読まない。"""
+    print(f"\n{'=' * 70}\n{path.name}\n{'=' * 70}")
+    if path.is_file():
+        print(f"  ファイル {path.stat().st_size} bytes")
+        if path.suffix.lower() in PEEK_TEXT_SUFFIXES and not looks_secret(path.name):
+            for line in path.read_text(errors="replace").splitlines()[:max_lines]:
+                print(f"    | {line}")
+        return
+
+    remote = git_remote(path)
+    if remote:
+        print(f"  git    : {remote}")
+    if (path / "pyvenv.cfg").is_file():
+        print("  種類   : Python の venv（リポジトリには入れない）")
+    for marker, what in (("package.json", "Node.js プロジェクト"),
+                         ("requirements.txt", "Python プロジェクト"),
+                         ("pyproject.toml", "Python パッケージ"),
+                         ("docker-compose.yml", "Docker 構成")):
+        if (path / marker).is_file():
+            print(f"  種類   : {what}（{marker} あり）")
+
+    entries = sorted(path.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+    print(f"  直下   : {len(entries)} 個")
+    for e in entries[:max_entries]:
+        print(f"    {'[dir] ' if e.is_dir() else '      '}{e.name}")
+    if len(entries) > max_entries:
+        print(f"    ... 他 {len(entries) - max_entries} 個")
+
+    counts: Dict[str, int] = {}
+    biggest: List[Tuple[int, str]] = []
+    for dirpath, dirnames, filenames in os.walk(path, onerror=lambda e: None):
+        dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        for name in filenames:
+            suffix = Path(name).suffix.lower() or "(拡張子なし)"
+            counts[suffix] = counts.get(suffix, 0) + 1
+            try:
+                size = (Path(dirpath) / name).stat().st_size
+            except OSError:
+                continue
+            biggest.append((size, str((Path(dirpath) / name).relative_to(path))))
+    if counts:
+        top = sorted(counts.items(), key=lambda kv: -kv[1])[:8]
+        print("  種類別 : " + "  ".join(f"{k} {v}" for k, v in top))
+    for size, rel in sorted(biggest, reverse=True)[:5]:
+        print(f"  大きい : {size / 1024 / 1024:8.1f} MB  {rel}")
+
+    for e in entries:
+        if (e.is_file() and e.suffix.lower() in PEEK_TEXT_SUFFIXES
+                and not looks_secret(e.name)):
+            print(f"  --- {e.name} の冒頭 ---")
+            try:
+                for line in e.read_text(errors="replace").splitlines()[:max_lines]:
+                    print(f"    | {line}")
+            except OSError:
+                print("    | (読めない)")
+            break
+
+
 def print_table(rows: List[dict]) -> None:
     # 判定と理由は日本語（全角）なので幅揃えを諦め、区切り文字で読ませる。
     width = max([len(r["name"]) for r in rows] + [4])
@@ -149,6 +236,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--old-name", default="rtvc", help="旧作業ディレクトリの名前")
     ap.add_argument("--proposal", type=Path, default=None,
                     help="退避案をこのパスに書き出す（実行はしない）")
+    ap.add_argument("--peek", nargs="*", default=None, metavar="NAME",
+                    help="中身を覗く。名前を省くと『未分類』のもの全部")
     args = ap.parse_args(argv)
 
     print("=== ローカル棚卸し（読み取り専用・何も削除しません）===")
@@ -160,7 +249,18 @@ def main(argv: Optional[List[str]] = None) -> int:
               file=sys.stderr)
         return 1
 
-    print_table(inventory(args.root))
+    rows = inventory(args.root)
+    print_table(rows)
+
+    if args.peek is not None:
+        names = args.peek or [r["name"] for r in rows if r["verdict"] == "未分類"]
+        for name in names:
+            target = args.root / name
+            if target.exists():
+                peek(target)
+            else:
+                print(f"\n{name}: 見つかりません")
+        return 0
 
     old = args.root / args.old_name
     print(f"\n=== 旧 {args.old_name} とリポジトリ版の比較 ===")
