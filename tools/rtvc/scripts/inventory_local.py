@@ -26,8 +26,8 @@ from typing import Dict, List, Optional, Tuple
 
 # 既知のディレクトリの扱い。判断の根拠を残すために、理由まで書いておく。
 KNOWN: Dict[str, Tuple[str, str]] = {
-    ".venv": ("残す", "計測用 venv。RVC の依存を入れると壊れる"),
-    ".venv-rvc": ("残す", "RVC 専用 venv。torch 2.7.1+cu128。rtvc もこちらで動く"),
+    ".venv": ("要判断", "旧・計測用 venv。2026-09-02 に退避済み。まだ在れば重複"),
+    ".venv-rvc": ("残す", "唯一の実行環境。torch 2.7.1+cu128。rtvc もこちらで動く"),
     "RVC": ("残す", "RVC 本体の clone。巨大かつ別ライセンスなのでリポジトリには入れない"),
     "rtvc": ("要判断", "リポジトリ tools/rtvc へ移管済み。差分が無ければ退避してよい"),
     # 2026-09-01 の --peek で正体が判明したもの

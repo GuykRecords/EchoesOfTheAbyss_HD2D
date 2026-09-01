@@ -12,17 +12,20 @@
 
 | 場所 | サイズ | これから | 理由 |
 |---|---|---|---|
-| `.venv-rvc` | 6.2 GB | **残す** | RVC 専用。torch 2.7.1+cu128。**rtvc もこちらで動く** |
-| `.venv` | 4.4 GB | **残す** | 計測用 (torch 2.11)。RVC の依存を入れると壊れる |
+| `.venv-rvc` | 6.2 GB | **残す** | RVC 専用。torch 2.7.1+cu128。**唯一の実行環境** |
+| `.venv` | 4.4 GB | ✅ **退避済み** | `.venv-rvc` で全部動くと実測で確認したため（2026-09-02） |
 | `RVC` | 2.6 GB | **残す** | RVC 本体の clone。巨大かつ別ライセンス |
 | `discord-voice` | 575 MB | **残す** | Discord 用 VC 環境 (VCClient / Beatrice)。rtvc とは別実装 |
 | `ComfyUI` | 50 MB | **残す** | ComfyUI 連携ツールキット。本体は `D:\ComfyUI` で別物 |
 | `Project Saikyo AI Vtuber` | 44 MB | **残す** | GitHub 管理済み |
 | `EchoesOfTheAbyss_HD2D` | — | **残す** | このリポジトリ |
 | `rtvc` | 0.1 MB | ✅ **退避済み** | `rtvc._archived_20260901` |
-| `project_handoff` | 0 MB | **要判断** | AI VTuber の旧引き継ぎ。Saikyo リポジトリと重複の可能性 |
-| `models` | 0 MB | **要判断** | 空 |
-| ルートの `*.md` 2 件 | 0 MB | **要判断** | Saikyo リポジトリ内に同名がある |
+| `project_handoff` | 0 MB | ✅ **退避済み** | 原本は Saikyo リポジトリ（GitHub 管理） |
+| `models` | 0 MB | ✅ **退避済み** | 空だった |
+| ルートの `*.md` 2 件 | 0 MB | ✅ **退避済み** | `project_handoff` 内と同一の 2026-07-06 版 |
+
+**整理は完了。** 退避したものは `*._archived_YYYYMMDD` として残っている。
+1〜2 週間動かして問題が無ければ手で削除してよい。
 
 **venv・RVC・discord-voice はリポジトリに入れない。** サイズが大きく、環境依存で、
 別ライセンス。Git で管理して得るものが無い。
@@ -114,7 +117,7 @@ code --diff D:\Claude\Project\rtvc\dsp.py `
 移行先が動くと確認できるまで、古い方は消さない。
 
 ```powershell
-D:\Claude\Project\.venv\Scripts\Activate.ps1
+D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
 cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
 
 # まず音声デバイス無しで通ることを確認（数秒で終わる）

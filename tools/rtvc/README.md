@@ -21,7 +21,7 @@
 > **名前 + `--host-api` で指定してください。**
 
 ```powershell
-# 家の PC（D:\Claude\Project\.venv を有効化した状態で）
+# 家の PC（D:\Claude\Project\.venv-rvc を有効化した状態で）
 cd <このリポジトリ>\tools\rtvc
 
 # デバイス一覧（WASAPI だけに絞る）

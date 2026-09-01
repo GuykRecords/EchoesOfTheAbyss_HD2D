@@ -13,7 +13,7 @@
 | GPU | RTX 4070 12GB (Ada, sm_89) |
 | PC | GALLERIA XA7C-R47-WH / i7-14700 / RAM 32GB / Win11 25H2 |
 | RVC 用 venv | `D:\Claude\Project\.venv-rvc` — Python 3.10.9, torch **2.7.1+cu128**。**rtvc もここで動く（2026-09-02 再確認）** |
-| 計測用 venv | `D:\Claude\Project\.venv` — Python 3.10.9, torch 2.11。**現状これでなければ困る用途は無い** |
+| ~~計測用 venv~~ | `D:\Claude\Project\.venv` は **2026-09-02 に退避**（`.venv-rvc` で全部動くため）|
 | 入力 | device 23 = INZONE Buds Chat mic (WASAPI 共有) |
 | 出力 | device 22 = CABLE Input (WASAPI 共有)。VB-CABLE 導入済み |
 | コード | このリポジトリの `tools/rtvc/` |
@@ -22,8 +22,11 @@
 > テスト 132 件通過、実機計測も `TOTAL 94.67ms / under 0 / over 0 / drop 0` で
 > `.venv` と完全一致。RVC を使うときもプロセスは 1 つで済む。
 >
-> したがって **`.venv`（4.4GB）は現状どの作業にも必要ない。**
-> torch 2.11 が要る別用途が出てこなければ退避してよい。
+> **`.venv`（4.4GB）は 2026-09-02 に退避済み。** 実行環境は `.venv-rvc` 一本。
+>
+> ```powershell
+> D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
+> ```
 
 ---
 
