@@ -585,12 +585,14 @@ def build_parser() -> argparse.ArgumentParser:
     # from "the user typed nothing" -- the RVC window depends on that.
     win = p.add_argument_group("window")
     win.add_argument("--block-ms", type=float, default=None,
-                     help="B: new audio per window (default: 32, or 30 for --engine rvc)")
+                     help="B: new audio per window. Controls how clear the "
+                          "conversion is (default: 32, or 130 for --engine rvc)")
     win.add_argument("--crossfade-ms", type=float, default=None,
-                     help="X: crossfade length (default: 8, or 10 for --engine rvc)")
+                     help="X: crossfade length. Controls how smooth the joins "
+                          "are (default: 8, or 50 for --engine rvc)")
     win.add_argument("--extra-ms", type=float, default=None,
                      help="EXTRA: past context; costs compute, not latency "
-                          "(default: 500, or 100 for --engine rvc)")
+                          "(default: 500, or 2500 for --engine rvc)")
     win.add_argument("--sola-search-ms", type=float, default=None,
                      help="S: how far the join may slide to find alignment. "
                           "Costs this much latency. A neural vocoder needs it -- "
@@ -618,6 +620,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     dsp = p.add_argument_group("dsp")
     dsp.add_argument("--no-gate", action="store_true", help="disable the noise gate")
+    dsp.add_argument("--gate", action="store_true",
+                     help="force the noise gate on. It is off by default for "
+                          "--engine rvc: measured on real speech, it eats the "
+                          "quiet ends of words before the model ever sees them")
     dsp.add_argument("--no-highpass", action="store_true", help="disable the 80 Hz high-pass")
     dsp.add_argument("--no-limiter", action="store_true", help="disable the output limiter")
 
@@ -665,14 +671,8 @@ def main(argv: Optional[list] = None) -> int:
         return 0
 
     sr = args.sr
-    # RVC counts in 10ms units, so it gets a different default window. B+X is
-    # 40ms either way, so the algorithmic latency is unchanged.
+    block_ms, crossfade_ms, extra_ms, sola_ms = resolve_window(args)
     is_rvc = args.engine == "rvc"
-    fallback = (30.0, 10.0, 100.0, 10.0) if is_rvc else (32.0, 8.0, 500.0, 0.0)
-    block_ms = fallback[0] if args.block_ms is None else args.block_ms
-    crossfade_ms = fallback[1] if args.crossfade_ms is None else args.crossfade_ms
-    extra_ms = fallback[2] if args.extra_ms is None else args.extra_ms
-    sola_ms = fallback[3] if args.sola_search_ms is None else args.sola_search_ms
 
     if is_rvc:
         try:
@@ -707,6 +707,25 @@ def main(argv: Optional[list] = None) -> int:
 #: Paths the user typed, which must be pinned down before anything can move
 #: the working directory out from under them.
 _USER_PATHS = ("offline_input", "offline_out", "record_in")
+
+
+def resolve_window(args) -> tuple:
+    """Fill in the window sizes the user did not give, and settle the gate.
+
+    RVC gets its own defaults, and they are the ones listening tests settled
+    on rather than the ones that keep the latency figure tidy: 30/10/100 with
+    a gate produced audio that was not speech. Also stores ``args.gate_on``.
+    """
+    is_rvc = args.engine == "rvc"
+    fallback = (130.0, 50.0, 2500.0, 10.0) if is_rvc else (32.0, 8.0, 500.0, 0.0)
+    block_ms = fallback[0] if args.block_ms is None else args.block_ms
+    crossfade_ms = fallback[1] if args.crossfade_ms is None else args.crossfade_ms
+    extra_ms = fallback[2] if args.extra_ms is None else args.extra_ms
+    sola_ms = fallback[3] if args.sola_search_ms is None else args.sola_search_ms
+    # A gate in front of a voice converter trades the ends of words for a
+    # little less room noise, which is a bad trade: the model needs those.
+    args.gate_on = bool(args.gate or (not args.no_gate and not is_rvc))
+    return block_ms, crossfade_ms, extra_ms, sola_ms
 
 
 def absolutise_user_paths(args) -> None:
@@ -757,7 +776,7 @@ def _run(args, sr, block, crossfade, extra, sola_search, clock) -> int:
         proc = WindowProcessor(
             engine, sr, block, crossfade, extra,
             highpass=not args.no_highpass,
-            gate=not args.no_gate,
+            gate=args.gate_on,
             limiter=not args.no_limiter,
             sola_search=sola_search,
         )
@@ -772,7 +791,7 @@ def _run(args, sr, block, crossfade, extra, sola_search, clock) -> int:
           f"window {proc.window_len} ({proc.window_len * 1000.0 / sr:.1f}ms)")
     print(f"engine {engine.name} | algorithmic latency B+X+S = "
           f"{proc.algorithmic_latency_ms:.2f}ms | gate "
-          f"{'off' if args.no_gate else 'on'} | hp "
+          f"{'on' if args.gate_on else 'off'} | hp "
           f"{'off' if args.no_highpass else 'on'}")
     print(clock.describe())
 

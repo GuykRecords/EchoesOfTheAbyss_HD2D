@@ -708,3 +708,38 @@ def test_absolute_paths_are_left_alone(tmp_path):
     absolutise_user_paths(args)
     assert args.offline_out == target
     assert args.offline_input is None, "unset paths must stay unset"
+
+
+def test_rvc_defaults_are_the_settings_that_were_measured_to_work():
+    """30/10/100 with a gate produced audio that was not speech.
+
+    The defaults now carry what listening tests settled on, so running
+    --engine rvc with no flags gives the configuration that works.
+    """
+    from rtvc.realtime import resolve_window
+
+    args = build_parser().parse_args(["--engine", "rvc"])
+    assert resolve_window(args) == (130.0, 50.0, 2500.0, 10.0)
+
+    args = build_parser().parse_args([])
+    assert resolve_window(args) == (32.0, 8.0, 500.0, 0.0)
+
+
+def test_anything_given_explicitly_still_wins():
+    from rtvc.realtime import resolve_window
+
+    args = build_parser().parse_args(["--engine", "rvc", "--block-ms", "60"])
+    assert resolve_window(args)[0] == 60.0
+
+
+def test_the_gate_is_off_for_rvc_and_on_otherwise():
+    """It eats the quiet ends of words before the model ever sees them."""
+    from rtvc.realtime import resolve_window
+
+    for argv, expected in ((["--engine", "rvc"], False),
+                           ([], True),
+                           (["--engine", "rvc", "--gate"], True),
+                           (["--no-gate"], False)):
+        args = build_parser().parse_args(argv)
+        resolve_window(args)
+        assert args.gate_on is expected, argv
