@@ -86,9 +86,23 @@ python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
 
 ---
 
-## A-5. RVC を載せたあと（判定可能・未実施）
+## A-5. RVC を載せたあと — 🔶 **infer は合格、TOTAL は未計測**
 
-前提：話者モデル `.pth` がまだ無い。`--engine rvc` は `exit=4` で正しく停止する。
+**2026-09-02 実測（つくよみちゃん公式モデル / 40k / 窓 30-10-100 / `--offline`）**
+
+| # | 条件 | 合格ライン | 実測 |
+|---|---|---|---|
+| 1 | `infer` | < 32ms、実運用 RTF 0.6 以下 | **9.28ms / RTF 0.309** ✅ |
+| 3 | `eng.tail_aware` | True | **True**（`infer_fn` が 3 引数） ✅ |
+| 4 | `torch.cuda.synchronize()` | 入っている | **入っている** ✅ |
+| 5 | モデルの SR | 48k / 24k 推奨 | 40k（公式モデル）。確認用なので許容 |
+| 2 | `under` / `over` / `drop` | すべて 0 | **未計測**（デバイス接続はこれから） |
+
+
+
+### 以下は当初の判定基準（記録として残す）
+
+前提：話者モデル `.pth` がまだ無い場合、`--engine rvc` は `exit=4` で正しく停止する。
 作り方は [`VOICE_TRAINING.md`](VOICE_TRAINING.md)。
 
 **訓練前に `python scripts\check_dataset.py <素材フォルダ>` が `合格` を出すこと。**
