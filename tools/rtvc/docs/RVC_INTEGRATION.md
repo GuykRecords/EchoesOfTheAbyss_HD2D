@@ -261,6 +261,29 @@ assert out.size == 1920
 
 ---
 
+## 7-B. 設定を聴き比べる（同じ音声で）
+
+窓の大きさを変えて品質を比べるとき、**毎回喋り直すと比較にならない**（喋り方が毎回違う）。
+一度録って、それを使い回す。
+
+```powershell
+# 1. 15 秒ぶん録る（passthrough なので自分の声がそのまま返る）
+python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
+  --out-device "INZONE Buds - Game" --duration 15 --record-in take.wav
+
+# 2. 設定を変えて同じ音声を変換（オフラインなので実時間より速い）
+foreach ($c in @("30,10","70,50","100,50","130,50")) {
+  $p = $c.Split(","); $b = $p[0]; $x = $p[1]
+  python realtime.py --engine rvc --offline --offline-input take.wav `
+    --offline-out "out_b${b}_x${x}.wav" --block-ms $b --crossfade-ms $x --extra-ms 2500
+}
+```
+
+できた WAV を並べて聴けば、**同じ喋りに対する設定の差**だけが比較できる。
+
+> `--record-in` は高域補正やゲートを**かける前**の生の入力を保存する。
+> オフライン再生時に同じ処理が改めてかかるので、二重にならない。
+
 ## 8. 速度が出なかったときの順番
 
 1. `return_length`（tail）が効いているか確認する — `eng.tail_aware` が `True` か

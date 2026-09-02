@@ -283,10 +283,14 @@ class RealtimeSession:
     """Owns the duplex stream, the worker thread and the reporting timer."""
 
     def __init__(self, processor: WindowProcessor, io, report_sec: float = 2.0,
-                 prefill_samples: int = 0) -> None:
+                 prefill_samples: int = 0, record_in: Optional[str] = None) -> None:
         self.proc = processor
         self.io = io
         self.prefill_samples = int(prefill_samples)
+        #: Where to save the raw captured audio, so the same take can be run
+        #: through different settings offline instead of being re-performed.
+        self.record_in = record_in
+        self._recorded: list = []
         self.report_sec = float(report_sec)
         self._stop = threading.Event()
         self._worker: Optional[threading.Thread] = None
@@ -310,6 +314,10 @@ class RealtimeSession:
             chunk = self.io.in_ring.read(block)
             if chunk is None:
                 continue
+            if self.record_in is not None:
+                # Raw, before the high-pass and gate, so an offline replay
+                # applies exactly the same processing rather than doing it twice.
+                self._recorded.append(chunk.copy())
             t0 = time.perf_counter()
             out = self.proc.process_block(chunk)
             dt_ms = (time.perf_counter() - t0) * 1000.0
@@ -400,7 +408,20 @@ class RealtimeSession:
             print("\nstopping...", file=sys.stderr, flush=True)
         finally:
             self.stop()
+            saved = self.save_recording()
             self._print_summary(time.perf_counter() - started)
+            if saved:
+                seconds = sum(c.size for c in self._recorded) / self.proc.sr
+                print(f"recorded {seconds:.1f}s of input to {saved}")
+                print("  replay it through other settings without performing again:")
+                print(f"  python realtime.py --engine rvc --offline "
+                      f"--offline-input {saved} --offline-out out.wav ...")
+
+    def save_recording(self) -> Optional[str]:
+        if self.record_in is None or not self._recorded:
+            return None
+        _write_wav(self.record_in, self.proc.sr, np.concatenate(self._recorded))
+        return self.record_in
 
     def stop(self) -> None:
         self._stop.set()
@@ -617,6 +638,9 @@ def build_parser() -> argparse.ArgumentParser:
     off.add_argument("--offline-seconds", type=float, default=10.0,
                      help="length of the synthetic signal when no input file is given")
     off.add_argument("--offline-out", default=None, help="write the processed audio here")
+    off.add_argument("--record-in", default=None, metavar="PATH",
+                     help="save the captured input to a WAV during a live run, so the "
+                          "same take can be replayed through other settings offline")
     return p
 
 
@@ -780,6 +804,7 @@ def _run(args, sr, block, crossfade, extra, sola_search, clock) -> int:
     session = RealtimeSession(
         proc, io, report_sec=args.report_sec,
         prefill_samples=int(round(sr * cushion_ms / 1000.0)),
+        record_in=args.record_in,
     )
     try:
         print(io.describe_devices())

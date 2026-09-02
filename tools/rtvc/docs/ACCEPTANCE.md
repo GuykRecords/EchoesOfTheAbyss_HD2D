@@ -11,7 +11,7 @@
 
 ```bash
 cd tools/rtvc
-python -m pytest tests/ -q      # 177 件 / 約 50 秒
+python -m pytest tests/ -q      # 179 件 / 約 50 秒
 ```
 
 | # | 条件 | 判定するテスト |

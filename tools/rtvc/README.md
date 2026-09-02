@@ -195,7 +195,7 @@ pip install -r requirements-dev.txt
 python -m pytest tests/ -q
 ```
 
-177 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
+179 件。音声デバイスも GPU も不要。GitHub Actions で push のたびに自動実行される
 （`.github/workflows/rtvc-tests.yml`）。
 
 うち 9 件（`tests/test_session.py`）は、PortAudio のコールバックを偽のフィーダから

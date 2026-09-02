@@ -432,3 +432,36 @@ def test_out_buf_is_not_measured_before_the_cushion_is_down():
     io._callback(np.zeros(io.blocksize, dtype=np.float32), out, io.blocksize,
                  None, FakeStatus())
     assert io.take_out_min_fill() > 0, "steady-state occupancy must be reported"
+
+
+def test_a_live_take_can_be_saved_and_replayed_offline(tmp_path):
+    """Comparing settings by ear needs the same performance every time."""
+    from scipy.io import wavfile
+
+    from rtvc.realtime import run_offline
+
+    wav = tmp_path / "take.wav"
+    proc = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA)
+    session = RealtimeSession(proc, FakeIO(), report_sec=0.5,
+                              prefill_samples=int(SR * 0.008),
+                              record_in=str(wav))
+    session.run(duration=1.0)
+
+    assert wav.exists()
+    sr, captured = wavfile.read(wav)
+    assert sr == SR
+    assert captured.ndim == 1
+    assert captured.size >= B * 10, "most of the take should have been kept"
+
+    # The saved take drives an offline run of the same length.
+    replay = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA)
+    out = run_offline(replay, captured.astype(np.float32), verbose=False)
+    assert out.size == (captured.size // B) * B
+
+
+def test_nothing_is_recorded_unless_asked(tmp_path):
+    proc = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA)
+    session = RealtimeSession(proc, FakeIO(), report_sec=0.5)
+    session.run(duration=0.6)
+    assert session.save_recording() is None
+    assert not list(tmp_path.iterdir())
