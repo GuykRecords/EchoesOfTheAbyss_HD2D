@@ -97,9 +97,22 @@ python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
 | 3 | `eng.tail_aware` | True | **True**（`infer_fn` が 3 引数） ✅ |
 | 4 | `torch.cuda.synchronize()` | 入っている | **入っている** ✅ |
 | 5 | モデルの SR | 48k / 24k 推奨 | 40k（公式モデル）。確認用なので許容 |
-| 6 | `TOTAL` | 100ms 前後 | **105.26ms** 🔶 あと 5.3ms |
+| 6 | `TOTAL` | 100ms 前後 | **261.43ms** ❌ → 下記のとおり目標を改める |
 
-`TOTAL` だけが目標をわずかに超える。→ [`HANDOVER.md`](HANDOVER.md) 2-C に削り方。
+### `TOTAL 100ms 以下` は取り下げる
+
+当初の目標は、**RVC がどれだけの窓を必要とするかを知る前**に立てたもの。
+実測で窓は `B=130 / X=50 / S=10 = 190ms` 必要と分かった（→ [`RVC_INTEGRATION.md`](RVC_INTEGRATION.md) 7-A）。
+デバイスの 46.67ms と合わせると、**原理的に 240ms を下回れない。**
+
+| 新しい目標 | 値 | 状態 |
+|---|---|---|
+| `under` / `over` / `drop` | すべて 0 | ✅ |
+| RTF | 0.6 以下 | ✅ **0.099** |
+| TOTAL | **300ms 以下**（友人との通話として実用） | ✅ **261ms** |
+
+Discord 自体の 40〜100ms は削れないので目標に含めない。
+**遅延をさらに削るのは、使うモデルが確定してから。**
 
 
 
