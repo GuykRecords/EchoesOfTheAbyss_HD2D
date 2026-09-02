@@ -454,7 +454,7 @@ def test_cli_offline_end_to_end(tmp_path, capsys):
     assert code == 0
     assert wav.exists()
     text = capsys.readouterr().out
-    assert "algorithmic latency (B+X) 40.00ms" in text
+    assert "algorithmic latency (B+X+S) 40.00ms" in text
 
 
 def test_cli_rejects_crossfade_longer_than_block(capsys):
@@ -547,3 +547,128 @@ def test_warmup_returns_through_the_processor():
     proc = WindowProcessor(FixedCostEngine(cost_ms=5.0, spin_ms=5.0), SR, B, X, EXTRA)
     steady = proc.warmup(iters=4)
     assert 4.5 <= steady <= 9.0, f"a 5ms engine warmed up as {steady}ms"
+
+
+# --------------------------------------------------------------------------
+# SOLA: joining output that is not phase-coherent
+# --------------------------------------------------------------------------
+
+
+def _envelope_floor(y, sr, expected, win_ms=5.0):
+    """Smallest peak in any short window, against the amplitude that should be there.
+
+    Two misaligned copies of a tone partially cancel where they are
+    crossfaded, so the envelope collapses at every join. 1.0 means nothing
+    was lost.
+
+    Measured against the *expected* amplitude rather than the observed
+    maximum, because equal-power crossfading two aligned copies legitimately
+    peaks at 1.41x -- comparing min to max would read that +3 dB as a dip.
+    """
+    w = int(sr * win_ms / 1000.0)
+    n = (y.size // w) * w
+    peaks = np.max(np.abs(y[:n].reshape(-1, w)), axis=1)
+    return float(np.min(peaks) / expected)
+
+
+class PhaseJitterEngine(PassthroughEngine):
+    """Stands in for a neural vocoder.
+
+    Regenerates the tone from scratch each call at an arbitrary phase, which
+    is what a vocoder does: the audio is right, but it does not line up with
+    what the previous window produced.
+    """
+
+    name = "phase-jitter"
+    AMPLITUDE = 0.5
+
+    def __init__(self, freq=200.0, seed=0):
+        super().__init__()
+        self.freq = freq
+        self._rng = np.random.default_rng(seed)
+
+    def _convert(self, window, sr, tail=None):
+        n = int(tail) if tail else int(np.asarray(window).size)
+        phase = self._rng.uniform(0.0, 2 * np.pi)
+        t = np.arange(n, dtype=np.float64) / sr
+        return (self.AMPLITUDE * np.sin(2 * np.pi * self.freq * t + phase)).astype(np.float32)
+
+
+def _run_blocks(proc, seconds=1.0):
+    n = int(SR * seconds) // proc.block
+    tone = np.zeros(proc.block, dtype=np.float32)
+    return np.concatenate([proc.process_block(tone) for _ in range(n)])
+
+
+def _joined(search, freq=200.0):
+    proc = WindowProcessor(PhaseJitterEngine(freq=freq), SR, B, X, EXTRA,
+                           highpass=False, gate=False, limiter=False,
+                           sola_search=search)
+    return _envelope_floor(_run_blocks(proc)[B * 2:], SR, PhaseJitterEngine.AMPLITUDE)
+
+
+def test_sola_finds_a_known_shift_exactly():
+    from rtvc.realtime import sola_offset
+
+    t = np.arange(4000) / SR
+    signal = (np.sin(2 * np.pi * 220 * t) + 0.4 * np.sin(2 * np.pi * 660 * t)).astype(np.float32)
+    reference = signal[500:980]
+    for shift in (0, 137, 480):
+        start = 20 + shift
+        candidate = signal[start:start + 960]
+        assert sola_offset(candidate, reference) == 480 - shift
+
+
+def test_without_sola_a_vocoder_cancels_itself_at_every_join():
+    """The failure this exists to fix: blocks that do not line up."""
+    floor = _joined(search=0)
+    assert floor < 0.8, f"expected cancellation without SOLA, floor {floor:.2f}"
+
+
+def test_with_sola_the_same_engine_joins_without_losing_anything():
+    floor = _joined(search=int(SR * 0.010))
+    assert floor > 0.98, f"SOLA did not recover alignment, floor {floor:.2f}"
+
+
+@pytest.mark.parametrize("search_ms,ok", [(0, False), (2, False), (5, True), (10, True)])
+def test_the_search_span_must_cover_a_pitch_period(search_ms, ok):
+    """A 200 Hz tone repeats every 5 ms; a shorter search cannot reach alignment.
+
+    So the span has to exceed one period of the *output* voice -- 10 ms suits
+    a high voice, a low one needs more.
+    """
+    floor = _joined(search=int(SR * search_ms / 1000.0))
+    assert (floor > 0.98) is ok, f"S={search_ms}ms gave floor {floor:.2f}"
+
+
+def test_sola_costs_exactly_the_search_span_in_latency():
+    search = int(SR * 0.010)
+    proc = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA, sola_search=search)
+    assert proc.algorithmic_latency_ms == pytest.approx(32.0 + 8.0 + 10.0)
+    assert proc.tail_len == X + B + search, "the engine must be asked for the search span"
+
+
+def test_on_coherent_audio_the_join_stays_at_the_newest_position():
+    """Passthrough is already aligned, so SOLA should never slide it back."""
+    search = int(SR * 0.010)
+    proc = WindowProcessor(PassthroughEngine(), SR, B, X, EXTRA,
+                           highpass=False, gate=False, limiter=False,
+                           sola_search=search)
+    rng = np.random.default_rng(4)
+    for _ in range(6):
+        proc.process_block(rng.standard_normal(B).astype(np.float32) * 0.2)
+    assert proc.last_sola_offset == search
+
+
+def test_sola_without_a_crossfade_is_rejected():
+    with pytest.raises(ValueError, match="crossfade"):
+        WindowProcessor(PassthroughEngine(), SR, B, 0, EXTRA, sola_search=480)
+
+
+def test_rvc_grid_covers_the_search_span():
+    """The tail asked of RVC is X+B+S, so S has to be on the grid too."""
+    with pytest.raises(ValueError, match="10ms grid"):
+        check_rvc_grid(block_ms=30.0, crossfade_ms=10.0, extra_ms=100.0,
+                       sola_search_ms=12.0)
+    check_rvc_grid(block_ms=30.0, crossfade_ms=10.0, extra_ms=100.0,
+                   sola_search_ms=10.0)

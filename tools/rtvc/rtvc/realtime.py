@@ -69,6 +69,25 @@ class StreamDead(RuntimeError):
 # ---------------------------------------------------------------------------
 
 
+def sola_offset(candidate: np.ndarray, reference: np.ndarray) -> int:
+    """Find where ``reference`` best lines up inside ``candidate``.
+
+    Normalised cross-correlation, the standard SOLA search.  Normalising by
+    the candidate's local energy matters: without it the loudest position
+    wins rather than the best-matching one, and the join drifts towards
+    whatever is loudest instead of whatever fits.
+    """
+    n = reference.size
+    span = candidate.size - n
+    if n == 0 or span <= 0:
+        return max(0, span)
+    correlation = np.correlate(candidate, reference, mode="valid")
+    energy = np.sqrt(
+        np.convolve(np.square(candidate, dtype=np.float64), np.ones(n), "valid")
+    ) + 1e-9
+    return int(np.argmax(correlation / energy))
+
+
 class WindowProcessor:
     """Turns a stream of ``B``-sample blocks into a stream of ``B``-sample blocks.
 
@@ -88,6 +107,7 @@ class WindowProcessor:
         gate: bool = True,
         limiter: bool = True,
         hp_cutoff: float = 80.0,
+        sola_search: int = 0,
     ) -> None:
         if block <= 0:
             raise ValueError("block must be > 0")
@@ -95,13 +115,23 @@ class WindowProcessor:
             raise ValueError("crossfade must satisfy 0 <= X <= B")
         if extra < 0:
             raise ValueError("extra must be >= 0")
+        if sola_search < 0:
+            raise ValueError("sola_search must be >= 0")
+        if sola_search and crossfade == 0:
+            raise ValueError("SOLA needs a crossfade to align against (X > 0)")
 
         self.engine = engine
         self.sr = int(sr)
         self.block = int(block)
         self.crossfade = int(crossfade)
         self.extra = int(extra)
+        #: How far back the join may slide to find alignment. Costs exactly
+        #: this much latency, and without it a neural vocoder's blocks cannot
+        #: be joined at all -- successive windows are not phase-coherent.
+        self.sola_search = int(sola_search)
         self.window_len = self.extra + self.crossfade + self.block
+        #: What the engine is asked for: the kept region plus the search span.
+        self.tail_len = self.crossfade + self.block + self.sola_search
 
         self.hp = HighPass(sr, cutoff=hp_cutoff) if highpass else None
         self.gate = NoiseGate(sr) if gate else None
@@ -110,6 +140,9 @@ class WindowProcessor:
 
         self._hist = np.zeros(self.extra + self.crossfade, dtype=np.float32)
         self._overlap: Optional[np.ndarray] = None
+        #: Where the last join landed, for reporting. `sola_search` means the
+        #: newest possible position; 0 means it slid the whole way back.
+        self.last_sola_offset = 0
 
     # -- latency bookkeeping ------------------------------------------------
     @property
@@ -125,13 +158,22 @@ class WindowProcessor:
         return self.extra * 1000.0 / self.sr
 
     @property
+    def sola_ms(self) -> float:
+        return self.sola_search * 1000.0 / self.sr
+
+    @property
     def algorithmic_latency_ms(self) -> float:
-        """``B + X``.  EXTRA is deliberately absent -- it is past audio."""
-        return self.block_ms + self.crossfade_ms
+        """``B + X + S``.  EXTRA is deliberately absent -- it is past audio.
+
+        The SOLA span is here because the join may slide that far back, so the
+        output can be that far behind the newest input.
+        """
+        return self.block_ms + self.crossfade_ms + self.sola_ms
 
     def reset(self) -> None:
         self._hist[:] = 0.0
         self._overlap = None
+        self.last_sola_offset = 0
         if self.hp:
             self.hp.reset()
         if self.gate:
@@ -141,7 +183,7 @@ class WindowProcessor:
         # Same window length *and* same tail as the live loop, or the
         # one-off costs warmup exists to absorb simply happen again.
         return self.engine.warmup(self.window_len, self.sr, iters=iters,
-                                  tail=self.crossfade + self.block)
+                                  tail=self.tail_len)
 
     # -- the loop body ------------------------------------------------------
     def process_block(self, block: np.ndarray) -> np.ndarray:
@@ -160,22 +202,33 @@ class WindowProcessor:
             self._hist = window[-self._hist.size:].copy()
 
         keep = self.crossfade + self.block
-        # Only the last X+B samples are ever used, so tell the engine that.
-        # A vocoder that honours it synthesises 40ms instead of 140ms.
-        converted = self.engine.convert(window, self.sr, tail=keep)
-        tail = converted[-keep:]
+        # Only the tail is ever used, so tell the engine that: a vocoder that
+        # honours it synthesises 40ms instead of 140ms.
+        converted = self.engine.convert(window, self.sr, tail=self.tail_len)
+        tail = converted[-self.tail_len:]
+
+        # Slide the join to where it actually fits. Passthrough is already
+        # phase-coherent and always lands at the newest position; a vocoder is
+        # not, and this is the difference between speech and mush.
+        if self.sola_search and self._overlap is not None:
+            offset = sola_offset(tail[:self.crossfade + self.sola_search],
+                                 self._overlap)
+        else:
+            offset = self.sola_search
+        self.last_sola_offset = offset
+        seg = tail[offset:offset + keep]
 
         if self.crossfade == 0:
-            out = tail.copy()
+            out = seg.copy()
         elif self._overlap is None:
             # First block: no previous glue to blend against.
-            out = tail[:self.block].copy()
+            out = seg[:self.block].copy()
         else:
-            blended = self._overlap * self.fade_out + tail[:self.crossfade] * self.fade_in
-            out = np.concatenate((blended, tail[self.crossfade:keep - self.crossfade]))
+            blended = self._overlap * self.fade_out + seg[:self.crossfade] * self.fade_in
+            out = np.concatenate((blended, seg[self.crossfade:keep - self.crossfade]))
 
         if self.crossfade:
-            self._overlap = tail[-self.crossfade:].copy()
+            self._overlap = seg[-self.crossfade:].copy()
 
         if self.limiter is not None:
             out = self.limiter.process(out)
@@ -193,6 +246,7 @@ class LatencyReport:
     block_ms: float
     infer_ms: float
     xfade_ms: float
+    sola_ms: float
     out_buf_ms: float
     out_dev_ms: float
     rtf: float
@@ -204,14 +258,15 @@ class LatencyReport:
 
     @property
     def total_ms(self) -> float:
-        return (self.in_dev_ms + self.block_ms + self.infer_ms
-                + self.xfade_ms + self.out_buf_ms + self.out_dev_ms)
+        return (self.in_dev_ms + self.block_ms + self.infer_ms + self.xfade_ms
+                + self.sola_ms + self.out_buf_ms + self.out_dev_ms)
 
     def line(self) -> str:
         return (
             f"[{self.elapsed_s:6.1f}s] "
             f"in-dev {self.in_dev_ms:6.2f} | block {self.block_ms:6.2f} | "
             f"infer {self.infer_ms:6.2f} | xfade {self.xfade_ms:5.2f} | "
+            f"sola {self.sola_ms:5.2f} | "
             f"out-buf {self.out_buf_ms:5.2f} | out-dev {self.out_dev_ms:6.2f} | "
             f"TOTAL {self.total_ms:7.2f} ms | RTF {self.rtf:5.3f} | "
             f"under {self.underflow} over {self.overflow} drop {self.dropped} | "
@@ -283,6 +338,7 @@ class RealtimeSession:
             block_ms=self.proc.block_ms,
             infer_ms=self.proc.engine.infer_ms_ema,
             xfade_ms=self.proc.crossfade_ms,
+            sola_ms=self.proc.sola_ms,
             out_buf_ms=out_buf_samples * 1000.0 / self.proc.sr,
             out_dev_ms=self.io.output_latency_ms,
             rtf=self.proc.engine.rtf(self.proc.block_ms),
@@ -362,7 +418,7 @@ class RealtimeSession:
         print(f"ran {elapsed:.1f}s | engine {engine.name} | calls {engine.calls}")
         print(f"infer ema {engine.infer_ms_ema:.3f}ms  peak {engine.infer_ms_max:.3f}ms  "
               f"RTF {engine.rtf(self.proc.block_ms):.3f}")
-        print(f"algorithmic latency (B+X) {self.proc.algorithmic_latency_ms:.2f}ms  "
+        print(f"algorithmic latency (B+X+S) {self.proc.algorithmic_latency_ms:.2f}ms  "
               f"window {self.proc.window_len} samples "
               f"({self.proc.window_len * 1000.0 / self.proc.sr:.1f}ms)")
         print(f"under {stats.underflow}  over {stats.overflow}  "
@@ -433,7 +489,7 @@ def run_offline(
         print(f"engine {processor.engine.name}: ema {processor.engine.infer_ms_ema:.3f}ms "
               f"peak {processor.engine.infer_ms_max:.3f}ms "
               f"RTF {processor.engine.rtf(processor.block_ms):.3f}")
-        print(f"algorithmic latency (B+X) {processor.algorithmic_latency_ms:.2f}ms")
+        print(f"algorithmic latency (B+X+S) {processor.algorithmic_latency_ms:.2f}ms")
         print(f"out peak {float(np.max(np.abs(out))) if out.size else 0.0:.4f}  "
               f"non-finite {int(np.count_nonzero(~np.isfinite(out)))}")
     return out
@@ -514,6 +570,11 @@ def build_parser() -> argparse.ArgumentParser:
     win.add_argument("--extra-ms", type=float, default=None,
                      help="EXTRA: past context; costs compute, not latency "
                           "(default: 500, or 100 for --engine rvc)")
+    win.add_argument("--sola-search-ms", type=float, default=None,
+                     help="S: how far the join may slide to find alignment. "
+                          "Costs this much latency. A neural vocoder needs it -- "
+                          "its blocks are not phase-coherent (default: 0, or 10 "
+                          "for --engine rvc)")
 
     eng = p.add_argument_group("engine")
     eng.add_argument("--engine", default="passthrough",
@@ -583,14 +644,18 @@ def main(argv: Optional[list] = None) -> int:
     # RVC counts in 10ms units, so it gets a different default window. B+X is
     # 40ms either way, so the algorithmic latency is unchanged.
     is_rvc = args.engine == "rvc"
-    fallback = (30.0, 10.0, 100.0) if is_rvc else (32.0, 8.0, 500.0)
+    fallback = (30.0, 10.0, 100.0, 10.0) if is_rvc else (32.0, 8.0, 500.0, 0.0)
     block_ms = fallback[0] if args.block_ms is None else args.block_ms
     crossfade_ms = fallback[1] if args.crossfade_ms is None else args.crossfade_ms
     extra_ms = fallback[2] if args.extra_ms is None else args.extra_ms
+    sola_ms = fallback[3] if args.sola_search_ms is None else args.sola_search_ms
 
     if is_rvc:
         try:
-            check_rvc_grid(block_ms=block_ms, crossfade_ms=crossfade_ms, extra_ms=extra_ms)
+            # The tail asked of RVC is X + B + S, so the search span has to sit
+            # on the same 10ms grid as everything else.
+            check_rvc_grid(block_ms=block_ms, crossfade_ms=crossfade_ms,
+                           extra_ms=extra_ms, sola_search_ms=sola_ms)
         except ValueError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 2
@@ -598,6 +663,7 @@ def main(argv: Optional[list] = None) -> int:
     block = max(1, int(round(sr * block_ms / 1000.0)))
     crossfade = int(round(sr * crossfade_ms / 1000.0))
     extra = int(round(sr * extra_ms / 1000.0))
+    sola_search = int(round(sr * sola_ms / 1000.0))
     if crossfade > block:
         print(f"error: --crossfade-ms ({crossfade_ms}) must not exceed "
               f"--block-ms ({block_ms})", file=sys.stderr)
@@ -609,12 +675,12 @@ def main(argv: Optional[list] = None) -> int:
     clock = HighResolutionTimer()
     clock.start()
     try:
-        return _run(args, sr, block, crossfade, extra, clock)
+        return _run(args, sr, block, crossfade, extra, sola_search, clock)
     finally:
         clock.stop()
 
 
-def _run(args, sr, block, crossfade, extra, clock) -> int:
+def _run(args, sr, block, crossfade, extra, sola_search, clock) -> int:
     is_rvc = args.engine == "rvc"
     if is_rvc:
         try:
@@ -640,18 +706,24 @@ def _run(args, sr, block, crossfade, extra, clock) -> int:
             return 4
     else:
         engine = build_engine(args.engine, sr, fixed_cost_ms=args.fixed_cost_ms)
-    proc = WindowProcessor(
-        engine, sr, block, crossfade, extra,
-        highpass=not args.no_highpass,
-        gate=not args.no_gate,
-        limiter=not args.no_limiter,
-    )
+    try:
+        proc = WindowProcessor(
+            engine, sr, block, crossfade, extra,
+            highpass=not args.no_highpass,
+            gate=not args.no_gate,
+            limiter=not args.no_limiter,
+            sola_search=sola_search,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
     print(f"rtvc | sr {sr} | B {block} ({proc.block_ms:.2f}ms) "
           f"X {crossfade} ({proc.crossfade_ms:.2f}ms) "
+          f"S {sola_search} ({proc.sola_ms:.2f}ms) "
           f"EXTRA {extra} ({proc.extra_ms:.2f}ms) "
           f"window {proc.window_len} ({proc.window_len * 1000.0 / sr:.1f}ms)")
-    print(f"engine {engine.name} | algorithmic latency B+X = "
+    print(f"engine {engine.name} | algorithmic latency B+X+S = "
           f"{proc.algorithmic_latency_ms:.2f}ms | gate "
           f"{'off' if args.no_gate else 'on'} | hp "
           f"{'off' if args.no_highpass else 'on'}")
