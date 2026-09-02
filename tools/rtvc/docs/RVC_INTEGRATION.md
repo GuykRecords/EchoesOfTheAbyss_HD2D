@@ -111,6 +111,10 @@ y = rvc.infer(x_tensor_16k, block_frame_16k, skip_head_zc, return_length_zc, f0m
 - `block_frame_16k` は **16kHz サンプル数**（`block_ms * 16`）
 - `RVC.__init__` は**例外を握り潰して traceback を print するだけ**なので、
   戻ったあと `net_g is None` を確認しないと壊れたまま進む
+- **`Config()` は自前の argparse で `sys.argv` を読む。**
+  RVC は単独アプリなのでそれで正しいが、ライブラリとして呼ぶと
+  `--engine` などを自分の引数として解釈し、`unrecognized arguments` で
+  **プロセスごと落とす**。`rvc_backend.py` は構築の間だけ argv を退避する
 - RVC はカレントディレクトリ相対で `assets/` を読む箇所がある（`rmvpe.pt` など）ため、
   `rvc_backend.py` は `os.chdir(rvc_root)` してから import する（`close()` で戻す）
 

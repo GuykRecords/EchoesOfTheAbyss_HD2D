@@ -124,3 +124,51 @@ def test_an_off_by_a_sample_conversion_keeps_the_end_of_the_tail(extra_samples):
         assert out[-1] == pytest.approx(tail + extra_samples - 1)
     else:
         assert out[-1] == pytest.approx(tail + extra_samples - 1)
+
+
+# --------------------------------------------------------------------------
+# RVC's Config parses sys.argv, and would eat ours
+# --------------------------------------------------------------------------
+
+
+def test_third_party_argument_parsing_cannot_see_our_command_line():
+    """RVC's Config() runs its own argparse over sys.argv.
+
+    As a standalone app that is correct; called as a library it read
+    `--engine rvc --host-api WASAPI ...`, found them unrecognised, and killed
+    the process before a single model was loaded.
+    """
+    import argparse
+    import sys
+
+    from rtvc.rvc_backend import _own_argv_only
+
+    original = ["realtime.py", "--engine", "rvc", "--host-api", "WASAPI"]
+    sys.argv = list(original)
+    try:
+        with _own_argv_only():
+            # Stand-in for RVC's Config.__init__
+            parser = argparse.ArgumentParser()
+            parser.add_argument("--port", type=int, default=7865)
+            parser.add_argument("--dml", action="store_true")
+            args = parser.parse_args()      # would SystemExit without the guard
+            assert args.port == 7865
+        assert sys.argv == original, "argv must be put back"
+    finally:
+        sys.argv = ["pytest"]
+
+
+def test_argv_is_restored_even_when_the_body_raises():
+    import sys
+
+    from rtvc.rvc_backend import _own_argv_only
+
+    original = ["realtime.py", "--engine", "rvc"]
+    sys.argv = list(original)
+    try:
+        with pytest.raises(ValueError):
+            with _own_argv_only():
+                raise ValueError("boom")
+        assert sys.argv == original
+    finally:
+        sys.argv = ["pytest"]

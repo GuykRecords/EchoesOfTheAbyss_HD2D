@@ -11,9 +11,10 @@ RVC が要求する torch<2.8 と非互換。``.venv-rvc`` には sounddevice / 
 
 from __future__ import annotations
 
+import contextlib
 import os
 import sys
-from typing import Optional, Tuple
+from typing import Iterator, Optional, Tuple
 
 import numpy as np
 
@@ -27,6 +28,25 @@ DEFAULT_RVC_ROOT = r"D:\Claude\Project\RVC"
 #: RVC のリアルタイム経路は ``zc = sr // 100`` すなわち 10 ms を 1 単位として数える。
 #: 16 kHz では 160 サンプル。
 ZC_SAMPLES_16K = 160
+
+
+@contextlib.contextmanager
+def _own_argv_only() -> Iterator[None]:
+    """RVC の ``Config()`` から ``sys.argv`` を隠す。
+
+    ``configs/config.py`` の ``Config.__init__`` は自前の argparse を回して
+    ``sys.argv`` を読む。RVC 本体は単独のアプリなのでそれで正しいが、
+    ライブラリとして呼ぶ側の引数（``--engine`` など）まで自分のものとして
+    解釈し、``unrecognized arguments`` で**プロセスごと落とす**。
+
+    構築の間だけ argv を空にする。RVC の引数はすべて既定値で問題ない。
+    """
+    saved = sys.argv
+    sys.argv = saved[:1]
+    try:
+        yield
+    finally:
+        sys.argv = saved
 
 
 def to_zc_units(samples_16k: int, what: str) -> int:
@@ -88,7 +108,15 @@ class RVCBackend:
             ) from exc
 
         self.torch = torch
-        self.config = Config()
+        try:
+            with _own_argv_only():
+                self.config = Config()
+        except SystemExit as exc:  # RVC 側の argparse が exit した
+            os.chdir(self._prev_cwd)
+            raise RuntimeError(
+                f"RVC の Config が引数解析で終了した (code {exc.code})。"
+                "sys.argv の退避が効いていない可能性がある。"
+            ) from exc
         self.device = str(self.config.device)
         self.f0method = f0method
 
