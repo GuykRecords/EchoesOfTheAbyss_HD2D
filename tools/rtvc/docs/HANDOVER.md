@@ -101,7 +101,14 @@ import 実測で `rtrvc.RVC` / `infer.hubert` / `SynthesizerTrnMs768NSFsid` / `R
 
 ## 次のタスク
 
-### 1. 話者モデル `.pth` を作る ← いまここ
+### 1. 話者モデル `.pth` を用意する ← いまここ
+
+**確認用なら訓練は不要かもしれない。** つくよみちゃんの**公式 RVC モデル**が配布されている
+（https://tyc.rei-yumesaki.net/work/software/rvc/ ）。外部に公開しない用途なら
+コーパスの規約①「何の制限もありません」に該当するので、`.pth` を `assets/weights` に
+置くだけで `--engine rvc` の実測に入れる。→ [`VOICE_TRAINING.md`](VOICE_TRAINING.md) §0
+
+自分の声のモデルは、経路が確定してから作れば無駄がない。
 
 **自分の声で学習する。** これが無いと `--engine rvc` は `exit=4` で正しく停止する。
 
