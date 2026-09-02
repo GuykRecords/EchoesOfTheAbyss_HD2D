@@ -86,17 +86,20 @@ python realtime.py --host-api WASAPI --in-device "INZONE Buds - Chat" `
 
 ---
 
-## A-5. RVC を載せたあと — 🔶 **infer は合格、TOTAL は未計測**
+## A-5. RVC を載せたあと — ✅ **合格（2026-09-02）**
 
-**2026-09-02 実測（つくよみちゃん公式モデル / 40k / 窓 30-10-100 / `--offline`）**
+**実機計測。つくよみちゃん公式モデル / v2 / 40k / fp16 / 窓 30-10-100 / 30 秒・999 回**
 
 | # | 条件 | 合格ライン | 実測 |
 |---|---|---|---|
-| 1 | `infer` | < 32ms、実運用 RTF 0.6 以下 | **9.28ms / RTF 0.309** ✅ |
+| 1 | `infer` | < 32ms、実運用 RTF 0.6 以下 | **10.51ms / RTF 0.350**（ピーク 13.12ms / 0.44） ✅ |
+| 2 | `under` / `over` / `drop` | すべて 0 | **0 / 0 / 0** ✅ |
 | 3 | `eng.tail_aware` | True | **True**（`infer_fn` が 3 引数） ✅ |
 | 4 | `torch.cuda.synchronize()` | 入っている | **入っている** ✅ |
 | 5 | モデルの SR | 48k / 24k 推奨 | 40k（公式モデル）。確認用なので許容 |
-| 2 | `under` / `over` / `drop` | すべて 0 | **未計測**（デバイス接続はこれから） |
+| 6 | `TOTAL` | 100ms 前後 | **105.26ms** 🔶 あと 5.3ms |
+
+`TOTAL` だけが目標をわずかに超える。→ [`HANDOVER.md`](HANDOVER.md) 2-C に削り方。
 
 
 
