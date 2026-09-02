@@ -7,6 +7,7 @@ sounded fine".
 """
 
 import threading
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -672,3 +673,38 @@ def test_rvc_grid_covers_the_search_span():
                        sola_search_ms=12.0)
     check_rvc_grid(block_ms=30.0, crossfade_ms=10.0, extra_ms=100.0,
                    sola_search_ms=10.0)
+
+
+def test_user_paths_are_pinned_before_anything_can_change_directory(tmp_path,
+                                                                   monkeypatch):
+    """The RVC backend chdirs into the RVC checkout; relative paths must survive.
+
+    Without this, --offline-out landed inside RVC's directory and
+    --offline-input was looked for there and not found.
+    """
+    from rtvc.realtime import absolutise_user_paths, build_parser
+
+    work = tmp_path / "work"
+    elsewhere = tmp_path / "rvc"
+    work.mkdir()
+    elsewhere.mkdir()
+    monkeypatch.chdir(work)
+
+    args = build_parser().parse_args(
+        ["--offline", "--offline-input", "take.wav",
+         "--offline-out", "out.wav", "--record-in", "cap.wav"])
+    absolutise_user_paths(args)
+
+    monkeypatch.chdir(elsewhere)  # what the backend does
+    for value in (args.offline_input, args.offline_out, args.record_in):
+        assert Path(value).parent == work, f"{value} moved with the cwd"
+
+
+def test_absolute_paths_are_left_alone(tmp_path):
+    from rtvc.realtime import absolutise_user_paths, build_parser
+
+    target = str(tmp_path / "out.wav")
+    args = build_parser().parse_args(["--offline", "--offline-out", target])
+    absolutise_user_paths(args)
+    assert args.offline_out == target
+    assert args.offline_input is None, "unset paths must stay unset"

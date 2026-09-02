@@ -704,7 +704,30 @@ def main(argv: Optional[list] = None) -> int:
         clock.stop()
 
 
+#: Paths the user typed, which must be pinned down before anything can move
+#: the working directory out from under them.
+_USER_PATHS = ("offline_input", "offline_out", "record_in")
+
+
+def absolutise_user_paths(args) -> None:
+    """Resolve the user's file arguments against the directory they typed them in.
+
+    The RVC backend has to ``chdir`` into the RVC checkout -- RVC reads its
+    assets by relative path, during the first inference as well as at load.
+    That silently re-bases every relative path the user gave us, so a
+    ``--offline-out out.wav`` lands inside the RVC checkout and a
+    ``--offline-input take.wav`` is not found at all.
+    """
+    import os as _os
+
+    for name in _USER_PATHS:
+        value = getattr(args, name, None)
+        if value:
+            setattr(args, name, _os.path.abspath(value))
+
+
 def _run(args, sr, block, crossfade, extra, sola_search, clock) -> int:
+    absolutise_user_paths(args)
     is_rvc = args.engine == "rvc"
     if is_rvc:
         try:
