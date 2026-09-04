@@ -308,6 +308,117 @@ python -m rtvc.realtime --engine rvc --list-devices
 
 ---
 
+## 4.5 `.venv-rvc` から RVC を動かすと、子プロセスが落ちる
+
+**先に読むこと。読まないと 1 時間溶ける。**
+
+`webui.py` の「データ処理」を押すと、Gradio 画面にはこう出るだけ。
+
+```
+【データ分割】
+状態：失敗
+RuntimeError: 子プロセスが終了コード付きで失敗しました: [1]
+```
+
+**この文言には原因が入っていない。** 本当のエラーは `webui.py` を動かしている
+ターミナルの方に出る。`logs\<実験名>\preprocess.log` は 0 バイトのまま
+（音声を読む前に死ぬので、1 行も書けない）。
+
+### 何が起きているか
+
+`webui.py` は子プロセスをこう起動する（`webui.py` 867 行目あたり）。
+
+```python
+cmd = '"%s" train/preprocess.py ...' % config.python_cmd
+```
+
+`python なんとか.py` という呼び方をすると、Python は**そのスクリプトのあるフォルダ**を
+検索先の先頭に置く。つまり子プロセスの基準は `RVC\train\` になる。すると:
+
+| 症状 | 理由 |
+|---|---|
+| `ModuleNotFoundError: No module named 'infer'` | `infer` は一つ上の `RVC\` にあるので見えない |
+| `ImportError: cannot import name 'utils' from partially initialized module 'train'` | `RVC\train\train.py` が `train` フォルダより先に見つかる。`train.py` の中の `from train import utils` が自分自身を指し、循環する |
+
+### 上流が壊れない理由
+
+`go-webui.bat` を読むと分かる。
+
+```
+runtime\python.exe -I webui.py --pycmd runtime\python.exe --port 7897
+```
+
+- **同梱の `runtime`** — 携帯版 Python には `python3xx._pth` が入っていて、RVC 直下が検索先に入る
+- **`-I`（isolated モード）** — その効果のひとつが「**スクリプトのあるフォルダを検索先に加えない**」。これで `train\train.py` が邪魔をしない
+
+`.venv-rvc` にはどちらも無い。**素材の問題でも設定の問題でもなく、起動作法の差**。
+
+`--pycmd` から `-I` を渡すことはできない。値は `'"%s" train/preprocess.py'` と
+引用符で囲まれるので、`"python -I"` は「そういう名前のプログラム」を探しに行って失敗する。
+
+### 対処：`.pth` を 1 つ置く
+
+`.venv-rvc` の site-packages にこれを置く。**RVC もこのリポジトリも 1 行も書き換えない。**
+
+```powershell
+Set-Content -Path D:\Claude\Project\.venv-rvc\Lib\site-packages\_rvc_root.pth `
+  -Encoding ascii -Value @("D:\Claude\Project\RVC", "import train, infer")
+```
+
+2 行の意味:
+
+| 行 | 効果 |
+|---|---|
+| `D:\Claude\Project\RVC` | RVC 直下を検索先に加える（`._pth` の代わり） |
+| `import train, infer` | **`RVC\train\` が割り込む前に**、正しい方を読み込ませて `sys.modules` に載せる |
+
+2 行目が肝。Python は一度読んだモジュールを二度は探さない。`.pth` は
+インタプリタ起動のごく早い段階（スクリプトのフォルダが検索先に入る**前**）に
+実行されるので、ここで先に正解を掴ませれば、あとから `train.py` が現れても無視される。
+
+`train` も `infer` も `__init__.py` を持たない空の入れ物（namespace package）なので、
+先読みのコストはゼロに近い。重い処理は走らない。
+
+### 効いたことの確かめ方
+
+**RVC と無関係な場所から**呼ぶこと。カレントディレクトリの偶然で通ってしまうのを防ぐ。
+
+```powershell
+cd C:\
+D:\Claude\Project\.venv-rvc\Scripts\python.exe -c "from infer.audio import load_audio; print('OK')"
+D:\Claude\Project\.venv-rvc\Scripts\python.exe -c "import train; print(train.__path__)"
+```
+
+期待する出力:
+
+```
+OK
+_NamespacePath(['D:\\Claude\\Project\\RVC\\train'])
+```
+
+`train.py` ではなく **`train` フォルダ**を指していること。
+
+### 元に戻す
+
+```powershell
+Remove-Item D:\Claude\Project\.venv-rvc\Lib\site-packages\_rvc_root.pth
+```
+
+これで `.venv-rvc` は完全に元通りになる。
+
+### 実測（この対処のあと）
+
+```
+[データ分割] Pending: 174 | プロセス数: 19
+[データ分割] 完了
+データ抽出完了：合計所要時間=19.047秒
+```
+
+174 本すべて成功、失敗 0。**死んでいたときは 1.0 秒**で終わっていた（起動即死）。
+所要時間が桁で変わるので、成否はそこでも見分けられる。
+
+---
+
 ## 5. ステップ 4：訓練する
 
 ```powershell
