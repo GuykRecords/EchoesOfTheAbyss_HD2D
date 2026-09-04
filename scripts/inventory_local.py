@@ -29,9 +29,10 @@ KNOWN: Dict[str, Tuple[str, str]] = {
     ".venv": ("要判断", "旧・計測用 venv。2026-09-02 に退避済み。まだ在れば重複"),
     ".venv-rvc": ("残す", "唯一の実行環境。torch 2.7.1+cu128。rtvc もこちらで動く"),
     "RVC": ("残す", "RVC 本体の clone。巨大かつ別ライセンスなのでリポジトリには入れない"),
-    "rtvc": ("要判断", "リポジトリ tools/rtvc へ移管済み。差分が無ければ退避してよい"),
+    "rtvc": ("要判断", "リポジトリ voice-lab へ移管済み。差分が無ければ退避してよい"),
     # 2026-09-01 の --peek で正体が判明したもの
-    "EchoesOfTheAbyss_HD2D": ("残す", "このリポジトリの clone。GitHub 管理済み"),
+    "voice-lab": ("残す", "このリポジトリの clone。GitHub 管理済み"),
+    "EchoesOfTheAbyss_HD2D": ("要判断", "旧名のクローン。voice-lab に改名済みなら重複"),
     "Project Saikyo AI Vtuber": ("残す", "GitHub 管理済み (GuykRecords/project-saikyo-ai-vtuber)"),
     "discord-voice": ("残す", "Discord 用 VC 環境 (VCClient/Beatrice)。rtvc とは別実装"),
     "ComfyUI": ("残す", "ComfyUI 連携ツールキット。本体は D:\\ComfyUI で別物"),
@@ -300,7 +301,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--root", type=Path, default=default_root(),
                     help="調べる場所（既定: D:\\Claude\\Project）")
     ap.add_argument("--repo", type=Path, default=repo_default,
-                    help="比較対象のリポジトリ側 tools/rtvc")
+                    help="比較対象のリポジトリ側（既定: このスクリプトの親）")
     ap.add_argument("--old-name", default="rtvc", help="旧作業ディレクトリの名前")
     ap.add_argument("--proposal", type=Path, default=None,
                     help="退避案をこのパスに書き出す（実行はしない）")

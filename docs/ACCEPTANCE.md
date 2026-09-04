@@ -10,7 +10,7 @@
 ## A-1. コードが壊れていないこと（判定可能・自動）
 
 ```bash
-cd tools/rtvc
+cd <このリポジトリ>
 python -m pytest tests/ -q      # 184 件 / 約 50 秒
 ```
 

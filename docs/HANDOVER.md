@@ -16,7 +16,7 @@
 | ~~計測用 venv~~ | `D:\Claude\Project\.venv` は **2026-09-02 に退避**（`.venv-rvc` で全部動くため）|
 | 入力 | device 23 = INZONE Buds Chat mic (WASAPI 共有) |
 | 出力 | device 22 = CABLE Input (WASAPI 共有)。VB-CABLE 導入済み |
-| コード | このリポジトリの `tools/rtvc/` |
+| コード | このリポジトリ直下（旧 `EchoesOfTheAbyss_HD2D/tools/rtvc/`）|
 
 > **`.venv-rvc` で計測ツールも全部動く。** 2026-09-02 に再確認:
 > テスト 132 件通過、実機計測も `TOTAL 94.67ms / under 0 / over 0 / drop 0` で

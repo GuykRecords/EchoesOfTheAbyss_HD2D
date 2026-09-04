@@ -18,7 +18,7 @@
 | `discord-voice` | 575 MB | **残す** | Discord 用 VC 環境 (VCClient / Beatrice)。rtvc とは別実装 |
 | `ComfyUI` | 50 MB | **残す** | ComfyUI 連携ツールキット。本体は `D:\ComfyUI` で別物 |
 | `Project Saikyo AI Vtuber` | 44 MB | **残す** | GitHub 管理済み |
-| `EchoesOfTheAbyss_HD2D` | — | **残す** | このリポジトリ |
+| `voice-lab` | — | **残す** | このリポジトリ（旧 `EchoesOfTheAbyss_HD2D`）|
 | `rtvc` | 0.1 MB | ✅ **退避済み** | `rtvc._archived_20260901` |
 | `project_handoff` | 0 MB | ✅ **退避済み** | 原本は Saikyo リポジトリ（GitHub 管理） |
 | `models` | 0 MB | ✅ **退避済み** | 空だった |
@@ -41,15 +41,15 @@
 
 ```powershell
 # 置き場所は好きなところでよい。例:
-git clone <このリポジトリの URL> D:\Claude\Project\EchoesOfTheAbyss_HD2D
-cd D:\Claude\Project\EchoesOfTheAbyss_HD2D
+git clone <このリポジトリの URL> D:\Claude\Project\voice-lab
+cd D:\Claude\Project\voice-lab
 git checkout claude/rtvc-realtime-audio-io-cc68yp
 ```
 
 ### Step 2. 棚卸し（読み取り専用・何も消えない）
 
 ```powershell
-cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
+cd D:\Claude\Project\voice-lab
 python scripts\inventory_local.py
 ```
 
@@ -106,7 +106,7 @@ python scripts\inventory_local.py --dupes
 ```powershell
 # 例: 差分を目で見る
 code --diff D:\Claude\Project\rtvc\dsp.py `
-            D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc\rtvc\dsp.py
+            D:\Claude\Project\voice-lab\rtvc\dsp.py
 ```
 
 **ここを飛ばして消すと、実機でしか分からなかった修正が消える。**
@@ -118,7 +118,7 @@ code --diff D:\Claude\Project\rtvc\dsp.py `
 
 ```powershell
 D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
-cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
+cd D:\Claude\Project\voice-lab
 
 # まず音声デバイス無しで通ることを確認（数秒で終わる）
 python -m pytest tests\ -q

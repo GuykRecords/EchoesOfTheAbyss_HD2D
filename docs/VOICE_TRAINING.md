@@ -155,7 +155,7 @@ MP3 は 1 本の長いファイルで、そのままでは学習に使えない�
 
 ```powershell
 D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
-cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
+cd D:\Claude\Project\voice-lab
 
 # まず結果だけ見る（何も書き出さない）
 python scripts\prepare_dataset.py D:\voice\source.mp3 --out D:\voice\raw --dry-run
@@ -194,7 +194,7 @@ pip install soundfile
 
 ```powershell
 D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
-cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
+cd D:\Claude\Project\voice-lab
 python scripts\check_dataset.py D:\Claude\Project\voice\raw
 ```
 
@@ -325,7 +325,7 @@ D:\Claude\Project\RVC\assets\indices\added_myvoice_....index
 
 ```powershell
 D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
-cd D:\Claude\Project\EchoesOfTheAbyss_HD2D\tools\rtvc
+cd D:\Claude\Project\voice-lab
 
 python realtime.py --engine rvc --host-api WASAPI `
   --in-device "INZONE Buds - Chat" --out-device "CABLE Input" --duration 30

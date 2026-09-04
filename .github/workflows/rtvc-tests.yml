@@ -1,21 +1,9 @@
 name: rtvc tests
 
-# The realtime voice-conversion tool lives in tools/rtvc and is independent of
-# the Unity project, so it only runs when that directory changes.
 on:
   push:
-    paths:
-      - "tools/rtvc/**"
-      - ".github/workflows/rtvc-tests.yml"
   pull_request:
-    paths:
-      - "tools/rtvc/**"
-      - ".github/workflows/rtvc-tests.yml"
   workflow_dispatch:
-
-defaults:
-  run:
-    working-directory: tools/rtvc
 
 jobs:
   test:
@@ -31,7 +19,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
-          cache-dependency-path: tools/rtvc/requirements-dev.txt
+          cache-dependency-path: requirements-dev.txt
 
       # sounddevice/PortAudio is deliberately not installed: the suite must
       # keep passing on a machine with no audio stack at all.
