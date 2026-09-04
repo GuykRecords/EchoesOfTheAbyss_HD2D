@@ -240,38 +240,87 @@ python scripts\check_dataset.py D:\Claude\Project\voice\raw
 
 `-v` を付けると全ファイルの数値が出る。
 
----
+### 基準を下げたときは、下げたと記録する
 
-## 4. ステップ 3：訓練用の環境を分ける
-
-> **`.venv-rvc` に訓練用の依存を入れないこと。**
->
-> `.venv-rvc` は**いま唯一動いている実行環境**で、実測 94.67ms を出している当のもの。
-> 訓練 UI（WebUI）は依存が多く、入れると壊れる可能性がある。
-> **訓練は 1 回きりのオフライン処理**なので、環境を分けても実行時のコストはゼロ。
-> これは `.venv` と `.venv-rvc` を分けたのと同じ判断。
+`--min-minutes` で総時間の基準だけは下げられる。**今回はそれを使った。**
 
 ```powershell
-py -3.10 -m venv D:\Claude\Project\.venv-train
-D:\Claude\Project\.venv-train\Scripts\Activate.ps1
-
-pip install torch --index-url https://download.pytorch.org/whl/cu128
-cd D:\Claude\Project\RVC
-pip install -r requirements.txt
+python scripts\check_dataset.py D:\Claude\Project\voice\ena --min-minutes 8
 ```
 
-`requirements.txt` は Python 3.12 向けなので、3.10 では入らないパッケージが出るかもしれない。
-**そのときはエラーをそのまま見せてほしい。** 個別に対処する。
+実データ（ena）は **174 本 / 8.8 分**で、既定の 10 分にわずかに届かない。
+他の項目（レート 48000 統一・ピーク -14.8〜-6.7 dBFS・環境音 -148.7〜-137.4 dBFS）は
+すべて余裕を持って通っている。**足りないのは量だけ**なので 8 分まで下げて進めた。
+
+> 8.8 分は「学習は回る」量であって「十分」ではない。
+> 出来上がりの声が場面によって崩れるようなら、**まず素材を足す**。
+> エポック数やパラメータをいじるより効く。
+
+---
+
+## 4. ステップ 3：訓練用の依存を入れる
+
+> **当初は `.venv-train` を別に作る方針だった。実測して取り下げた。**
+>
+> 心配していたのは、訓練 UI の依存が `.venv-rvc`（実測 261.43ms を出している当の実行環境）の
+> **torch と numpy を入れ替えてしまう**こと。そこで `--dry-run` で先に確かめた。
+>
+> ```
+> Requirement already satisfied: numpy<2,>=1.26.4 ... (1.26.4)
+> Requirement already satisfied: torch>=2.7.1  ... (2.7.1+cu128)
+> ```
+>
+> **どちらも「すでに条件を満たす」で、入れ替え対象に入っていない。**
+> 入るのは gradio / tensorboard / matplotlib / onnxruntime-gpu などの周辺だけ。
+> よって `.venv-rvc` にそのまま入れる。**別環境の 20 分と 2.5GB を節約した。**
+
+まず、何も変えずにコストだけ調べる（`--dry-run` は何もインストールしない）。
+
+```powershell
+D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
+cd D:\Claude\Project\RVC
+pip install --dry-run -r requirments_cu128_py312.txt
+```
+
+> ファイル名の `requirments` は綴りが違うが、**RVC 側がそうなっている。** 直さない。
+
+出力の最後の `Would install ...` の行を見る。
+
+| そこに出ているもの | 判断 |
+|---|---|
+| `torch-*` も `numpy-*` も**無い** | そのまま入れてよい（← 今回はこれだった） |
+| `torch-*` か `numpy-*` が**ある** | **入れない。** `.venv-train` を別に作る |
+
+問題なければ、`--dry-run` を外して実行する。
+
+```powershell
+pip install -r requirments_cu128_py312.txt
+```
+
+入れたあと、**実行環境が壊れていないことを必ず確かめる**（訓練の前に）。
+
+```powershell
+cd D:\Claude\Project\voice-lab
+python -m rtvc.realtime --engine rvc --list-devices
+```
+
+デバイス一覧が今までどおり出れば、`.venv-rvc` は無事。
 
 ---
 
 ## 5. ステップ 4：訓練する
 
 ```powershell
-D:\Claude\Project\.venv-train\Scripts\Activate.ps1
+D:\Claude\Project\.venv-rvc\Scripts\Activate.ps1
 cd D:\Claude\Project\RVC
-python infer-web.py
+$env:GRADIO_ANALYTICS_ENABLED="False"
+python webui.py
 ```
+
+> **起動スクリプトは `webui.py`。** 古い RVC の記事にある `infer-web.py` はこのリポジトリには無い。
+> `go-webui.bat` を叩いても同じものが立ち上がるが、そちらは自前の venv を見に行くので使わない。
+>
+> `GRADIO_ANALYTICS_ENABLED="False"` は Gradio の外部通信を止めるためのもの。無くても動く。
 
 ブラウザで開いた画面の「訓練 / Train」タブで作業する。
 
@@ -279,12 +328,12 @@ python infer-web.py
 
 | 設定 | 値 | 理由 |
 |---|---|---|
-| モデル名 | 半角英数字（例 `myvoice`） | **日本語やスペースを入れない**。パスで落ちる既知問題 |
+| モデル名 | 半角英数字（例 `ena`） | **日本語やスペースを入れない**。パスで落ちる既知問題 |
 | バージョン | **v2** | |
 | **目標サンプルレート** | **48k** | ← **下の注を必ず読むこと** |
 | 音高（f0）の抽出 | **あり** | 無しだとピッチが変換されない |
 | f0 抽出方法 | **rmvpe** | 本番の推論と揃える |
-| 学習データのパス | `D:\Claude\Project\voice\raw` | |
+| 学習データのパス | `D:\Claude\Project\voice\ena` | `prepare_dataset.py` の出力先。**`raw` ではない** |
 | バッチサイズ | **8 から始める** | RTX 4070 12GB。OOM が出たら 6 → 4 と下げる |
 | エポック数 | **150** | 下の「止めどき」を参照 |
 | 保存頻度 | **10 エポックごと** | 途中の重みを残す。これが効く |
