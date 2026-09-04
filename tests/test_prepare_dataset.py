@@ -94,7 +94,8 @@ def test_silence_only_input_yields_nothing(tmp_path):
 
 def test_output_is_48k_mono_and_normalised(source, tmp_path):
     out = tmp_path / "raw"
-    segments, sr_in, notes = pd.prepare_file(source / "interview.wav", out)
+    segments, sr_in, notes, source_seconds = pd.prepare_file(source / "interview.wav", out)
+    assert source_seconds == pytest.approx(60.0, abs=0.1)
     assert sr_in == SR
     assert any("アップサンプル" in n for n in notes), "upsampling should be called out"
 
@@ -115,7 +116,7 @@ def test_the_source_file_is_never_modified(source, tmp_path):
 
 def test_dry_run_writes_nothing(source, tmp_path):
     out = tmp_path / "raw"
-    segments, _, _ = pd.prepare_file(source / "interview.wav", out, dry_run=True)
+    segments, _, _, _ = pd.prepare_file(source / "interview.wav", out, dry_run=True)
     assert segments
     assert not out.exists()
 
@@ -125,7 +126,7 @@ def test_clipping_in_the_source_is_reported_because_it_cannot_be_undone(tmp_path
     folder.mkdir()
     wavfile.write(folder / "hot.wav", 48000,
                   np.clip(speech(seconds=20.0, sr=48000) * 4, -1.0, 1.0).astype(np.float32))
-    _, _, notes = pd.prepare_file(folder / "hot.wav", tmp_path / "raw", dry_run=True)
+    _, _, notes, _ = pd.prepare_file(folder / "hot.wav", tmp_path / "raw", dry_run=True)
     assert any("クリップ" in n for n in notes)
 
 
@@ -180,3 +181,47 @@ def test_compressed_sources_are_decoded_when_a_decoder_is_available(tmp_path, su
     sr, x = pd.decode(path)
     assert sr == SR
     assert x.ndim == 1 and x.size > SR * 25
+
+
+def test_a_decomposed_filename_is_still_found(tmp_path):
+    """Japanese names can be stored decomposed and typed composed.
+
+    They look identical in a directory listing, so a file that is plainly
+    there reports as missing. Both spellings must resolve to it.
+    """
+    import unicodedata
+
+    composed = "ミックスダウン.wav"           # NFC, as typed
+    decomposed = unicodedata.normalize("NFD", composed)
+    assert composed != decomposed
+
+    on_disk = tmp_path / decomposed
+    wavfile.write(on_disk, 48000, speech(seconds=10.0))
+
+    assert pd.resolve_path(tmp_path / composed) == on_disk
+    assert pd.resolve_path(on_disk) == on_disk
+
+
+def test_resolve_path_leaves_a_genuinely_missing_file_alone(tmp_path):
+    missing = tmp_path / "nope.wav"
+    assert pd.resolve_path(missing) == missing
+
+
+def test_the_cli_accepts_the_composed_spelling(tmp_path, capsys):
+    import unicodedata
+
+    src = tmp_path / "src"
+    src.mkdir()
+    name = "収録_ミックスダウン.wav"
+    wavfile.write(src / unicodedata.normalize("NFD", name), SR, speech(seconds=60.0))
+
+    assert pd.main([str(src / name), "--out", str(tmp_path / "out"), "--dry-run"]) == 0
+    assert "見つかりません" not in capsys.readouterr().err
+
+
+def test_the_report_says_how_much_of_the_source_survived(source, tmp_path, capsys):
+    """8.8 minutes out of what? Without the source length the number means nothing."""
+    pd.main([str(source), "--out", str(tmp_path / "out"), "--dry-run"])
+    out = capsys.readouterr().out
+    assert "元 1.0 分" in out
+    assert "保持" in out

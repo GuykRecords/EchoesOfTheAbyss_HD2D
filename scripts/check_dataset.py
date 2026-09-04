@@ -42,6 +42,28 @@ def db(x: float) -> float:
     return 20.0 * math.log10(max(float(x), 1e-12))
 
 
+def resolve_path(path: Path) -> Path:
+    """Find a file whose name differs only by Unicode normalisation.
+
+    Japanese filenames can be stored decomposed (NFD: "タ" + a combining
+    dakuten) while the same name typed or pasted is composed (NFC: "ダ").
+    They render identically, so a path that plainly exists in the directory
+    listing appears to be missing.
+    """
+    if path.exists():
+        return path
+    import unicodedata
+
+    parent = path.parent if str(path.parent) else Path(".")
+    if not parent.is_dir():
+        return path
+    target = unicodedata.normalize("NFC", path.name)
+    for candidate in parent.iterdir():
+        if unicodedata.normalize("NFC", candidate.name) == target:
+            return candidate
+    return path
+
+
 def load_wav(path: Path) -> Tuple[int, np.ndarray, int]:
     """WAV を (sr, float32 モノラル) で読む。整数形式は正規化する。"""
     from scipy.io import wavfile
@@ -238,6 +260,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("-v", "--verbose", action="store_true", help="全ファイルを表示")
     args = ap.parse_args(argv)
 
+    args.folder = resolve_path(args.folder)
     if not args.folder.is_dir():
         print(f"error: {args.folder} が見つかりません", file=sys.stderr)
         return 2

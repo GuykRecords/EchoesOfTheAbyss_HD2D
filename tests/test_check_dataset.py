@@ -157,3 +157,12 @@ def test_findings_are_grouped_rather_than_listed_once_per_file(tmp_path, capsys)
     out = capsys.readouterr().out
     assert out.count("長すぎる") == 1
     assert "[  40 本]" in out
+
+
+def test_a_decomposed_folder_name_is_still_found(tmp_path):
+    import unicodedata
+
+    composed = "音声素材"
+    folder = tmp_path / unicodedata.normalize("NFD", composed)
+    folder.mkdir()
+    assert cd.resolve_path(tmp_path / composed) == folder

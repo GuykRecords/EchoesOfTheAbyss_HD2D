@@ -48,6 +48,28 @@ def amp(db_value: float) -> float:
 # ---------------------------------------------------------------------------
 
 
+def resolve_path(path: Path) -> Path:
+    """Find a file whose name differs only by Unicode normalisation.
+
+    Japanese filenames can be stored decomposed (NFD: "タ" + a combining
+    dakuten) while the same name typed or pasted is composed (NFC: "ダ").
+    They render identically, so a path that plainly exists in the directory
+    listing appears to be missing.
+    """
+    if path.exists():
+        return path
+    import unicodedata
+
+    parent = path.parent if str(path.parent) else Path(".")
+    if not parent.is_dir():
+        return path
+    target = unicodedata.normalize("NFC", path.name)
+    for candidate in parent.iterdir():
+        if unicodedata.normalize("NFC", candidate.name) == target:
+            return candidate
+    return path
+
+
 def to_mono(data: np.ndarray) -> np.ndarray:
     return data if data.ndim == 1 else data.mean(axis=1)
 
@@ -59,9 +81,18 @@ def decode(path: Path) -> Tuple[int, np.ndarray]:
     駄目なら ffmpeg。どちらも無ければ、**何を入れればよいかを名指しで**言う。
     """
     if path.suffix.lower() == ".wav":
+        import warnings
+
         from scipy.io import wavfile
 
-        sr, data = wavfile.read(path)
+        # A WAV written by a DAW carries chunks scipy does not know (markers,
+        # loop points, iXML). Skipping them is correct and not worth a scary
+        # warning, but it is worth saying once that it happened.
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            sr, data = wavfile.read(path)
+        if any("Chunk (non-data)" in str(w.message) for w in caught):
+            print(f"      ! {path.name}: DAW のメタデータを読み飛ばした（音声には影響なし）")
         data = np.asarray(data)
         if np.issubdtype(data.dtype, np.integer):
             info = np.iinfo(data.dtype)
@@ -217,10 +248,11 @@ def prepare_file(
 ) -> Tuple[List[Segment], int, List[str]]:
     """1 ファイルを読み、48k モノラルに直し、切って書き出す。
 
-    戻り値は (区間, 元の sr, 注意書き)。
+    戻り値は (区間, 元の sr, 注意書き, 元の秒数)。
     """
     notes: List[str] = []
     sr, x = decode(path)
+    source_seconds = x.size / sr if sr else 0.0
 
     if sr != target_sr:
         if sr < target_sr:
@@ -248,7 +280,7 @@ def prepare_file(
         for i, seg in enumerate(segments):
             wavfile.write(out_dir / f"{stem}_{i:04d}.wav", target_sr,
                           x[seg.start:seg.end].astype(np.float32))
-    return segments, sr, notes
+    return segments, sr, notes, source_seconds
 
 
 def _inputs(target: Path) -> List[Path]:
@@ -276,6 +308,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--force", action="store_true", help="出力先が空でなくても実行")
     args = ap.parse_args(argv)
 
+    args.source = resolve_path(args.source)
     if not args.source.exists():
         print(f"error: {args.source} が見つかりません", file=sys.stderr)
         return 2
@@ -292,12 +325,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     print(f"入力 {len(sources)} 本 → {args.out}"
           + ("  (dry-run: 書き出しません)" if args.dry_run else ""))
     total_seconds = 0.0
+    total_source_seconds = 0.0
     total_clips = 0
     failures = 0
 
     for path in sources:
         try:
-            segments, sr, notes = prepare_file(
+            segments, sr, notes, source_seconds = prepare_file(
                 path, args.out, target_sr=args.target_sr, peak_dbfs=args.peak_dbfs,
                 dry_run=args.dry_run, min_seconds=args.min_seconds,
                 max_seconds=args.max_seconds, silence_dbfs=args.silence_dbfs,
@@ -309,12 +343,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             continue
         seconds = sum(s.length for s in segments) / args.target_sr
         total_seconds += seconds
+        total_source_seconds += source_seconds
         total_clips += len(segments)
-        print(f"  {path.name}  {sr}Hz → {len(segments)} 本 / {seconds / 60:.1f} 分")
+        kept = (seconds / source_seconds * 100) if source_seconds else 0.0
+        print(f"  {path.name}  {sr}Hz  元 {source_seconds / 60:.1f} 分 → "
+              f"{len(segments)} 本 / {seconds / 60:.1f} 分（保持 {kept:.0f}%）")
         for note in notes:
             print(f"      ! {note}")
 
-    print(f"\n合計 {total_clips} 本 / {total_seconds / 60:.1f} 分")
+    kept = (total_seconds / total_source_seconds * 100) if total_source_seconds else 0.0
+    print(f"\n合計 {total_clips} 本 / {total_seconds / 60:.1f} 分"
+          f"（元 {total_source_seconds / 60:.1f} 分の {kept:.0f}%）")
+    if total_seconds and kept < 55:
+        print("  保持率が低い。間が長い収録なら正常だが、"
+              "--silence-dbfs を下げるか --min-silence を伸ばすと拾える量が増える。")
     if failures:
         print(f"読めなかったファイル: {failures} 本")
     if total_clips and not args.dry_run:
