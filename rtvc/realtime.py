@@ -613,6 +613,11 @@ def build_parser() -> argparse.ArgumentParser:
     rvc.add_argument("--rvc-index", default=None, help="faiss .index file")
     rvc.add_argument("--rvc-index-rate", type=float, default=0.0,
                      help="faiss blend; searching every block is expensive, start at 0")
+    rvc.add_argument("--rvc-index-nprobe", type=int, default=16,
+                     help="how many IVF cells the index search looks at. faiss "
+                          "defaults to 1, which returns fewer than the 8 neighbours "
+                          "RVC asks for; RVC then silently drops the block's index "
+                          "blend and blames the index file. 0 leaves faiss alone")
     rvc.add_argument("--rvc-key", type=int, default=0, help="pitch shift in semitones")
     rvc.add_argument("--rvc-formant", type=float, default=0.0, help="formant shift")
     rvc.add_argument("--f0-method", default="rmvpe", choices=("rmvpe", "fcpe"),

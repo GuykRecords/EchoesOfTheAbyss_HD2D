@@ -616,6 +616,68 @@ added_IVF681_Flat_nprobe_1_ena_v2.index
 
 ---
 
+## 5.8 index が「無効」と言われるのは、たいてい index のせいではない
+
+`--rvc-index-rate` を 0 より上げると、毎ブロックこれが出ることがある。
+
+```
+インデックス検索を有効化しました              ← 読み込みは成功している
+無効なインデックスです。使用してください: added_xxxx.index, not trained_xxxx.index
+```
+
+**メッセージを信じないこと。** ファイル名は関係ない。`infer/rtrvc.py` 249 行あたり:
+
+```python
+score, ix = self.index.search(npy, k=8)
+if (ix >= 0).all():
+    ...混ぜる...
+else:
+    printt(i18n("索引无效：必須added_xxxx.index..."))
+```
+
+例外ではなく `else`。**faiss が 8 件そろえられず `-1` を返した**だけで、RVC はその
+1 パターンしか想定していないので、無関係な原因を名指しする。
+
+理由は index の名前が言っている。
+
+```
+added_IVF681_Flat_nprobe_1_ena_v2.index
+                          ^^^^^^^^
+```
+
+IVF は 26,585 本のベクトルを 681 区画に分けて持つ。`nprobe=1` は「1 区画だけ見る」で、
+平均 39 本の区画でも、少ない区画に当たれば 8 件に届かない。1 件でも欠ければ
+**そのブロックの index 合成は丸ごと捨てられる**。既定のままでは実質的に機能しない。
+
+### 対処：`--rvc-index-nprobe`（既定 16）
+
+`rtvc` 側で faiss の `nprobe` を広げるようにした。**index を作り直す必要はない。**
+
+```powershell
+python -m rtvc.realtime --engine rvc --offline --offline-input take3.wav `
+  --rvc-model "...\ena_e150_s5400.pth" --rvc-key 12 `
+  --rvc-index "...\ena_added_IVF681_Flat_nprobe_1_ena_v2.index" --rvc-index-rate 0.5 `
+  --offline-out out.wav
+```
+
+起動時の `rvc params` 行に `nprobe=16` が出る。効いていれば
+`無効なインデックスです` は消える。**消えないなら別の原因**なので、そこで切り分ける。
+
+`--rvc-index-nprobe 0` で faiss の既定（1）に戻せる。
+
+### 索引ありの実測（e150 / key 12 / take3.wav）
+
+| index_rate | infer ema | RTF |
+|---|---|---|
+| 0.0（索引なし） | 11.1 ms | 0.085 |
+| 0.25 / 0.5 / 0.75（**失敗していた**） | 12.6〜12.8 ms | 0.097〜0.099 |
+
+失敗していても検索自体は走るので、時間は増える。**上の表の下段は「索引の効果」ではなく
+「索引を試みて捨てた」コスト**。130 ms のブロックに対して 13 ms なので、
+成立させても余裕は十分ある。
+
+---
+
 ## 6. ステップ 5：置いて動かす
 
 できた `.pth` と `.index` を RVC の所定の場所に置く。

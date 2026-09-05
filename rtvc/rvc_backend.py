@@ -20,14 +20,21 @@ import numpy as np
 
 from .engines import RVCTorchEngine
 
-__all__ = ["RVCBackend", "find_first_model", "build_rvc_engine",
-           "DEFAULT_RVC_ROOT", "ZC_SAMPLES_16K", "to_zc_units"]
+__all__ = ["RVCBackend", "find_first_model", "build_rvc_engine", "widen_index_search",
+           "DEFAULT_RVC_ROOT", "ZC_SAMPLES_16K", "to_zc_units", "DEFAULT_NPROBE"]
 
 DEFAULT_RVC_ROOT = r"D:\Claude\Project\RVC"
 
 #: RVC のリアルタイム経路は ``zc = sr // 100`` すなわち 10 ms を 1 単位として数える。
 #: 16 kHz では 160 サンプル。
 ZC_SAMPLES_16K = 160
+
+#: RVC が作る index は IVF（ベクトルを区画に分けて持つ形式）で、faiss の既定では
+#: **1 区画しか見ない**。``rtrvc.py`` は毎ブロック ``k=8`` 件を要求し、1 件でも
+#: 欠けて ``-1`` が返ると、そのブロックの index 合成を丸ごと捨てる（しかも
+#: 「index ファイルが違う」という的外れなメッセージを出す）。区画あたりの
+#: 平均本数を割り込む区画は普通にあるので、既定の 1 では実質的に機能しない。
+DEFAULT_NPROBE = 16
 
 
 @contextlib.contextmanager
@@ -63,6 +70,18 @@ def to_zc_units(samples_16k: int, what: str) -> int:
     return samples_16k // ZC_SAMPLES_16K
 
 
+def widen_index_search(index_obj, nprobe: int) -> int:
+    """faiss の IVF index が一度に見る区画数を広げる。設定できた値を返す。
+
+    ``nprobe`` を持たない index（Flat など）や index 無しは 0 を返すだけで、
+    エラーにはしない。呼び出し側が「効いたかどうか」を表示できるようにしてある。
+    """
+    if index_obj is None or nprobe <= 0 or not hasattr(index_obj, "nprobe"):
+        return 0
+    index_obj.nprobe = int(nprobe)
+    return int(nprobe)
+
+
 class RVCBackend:
     """``infer/rtrvc.py`` の ``RVC`` を保持し、numpy in / numpy out の infer_fn を提供する。"""
 
@@ -76,6 +95,7 @@ class RVCBackend:
         formant: float = 0.0,
         f0method: str = "rmvpe",
         rvc_root: str = DEFAULT_RVC_ROOT,
+        index_nprobe: int = DEFAULT_NPROBE,
     ) -> None:
         if not os.path.isfile(pth_path):
             raise FileNotFoundError(f"話者モデルが見つからない: {pth_path}")
@@ -127,6 +147,8 @@ class RVCBackend:
                 "RVC の初期化に失敗した。rtrvc.RVC.__init__ は例外を握り潰して "
                 "traceback を print するだけなので、上の出力を確認すること。"
             )
+
+        self.index_nprobe = widen_index_search(getattr(self.rvc, "index", None), index_nprobe)
 
         self.tgt_sr = int(self.rvc.tgt_sr)
         self.is_half = bool(self.config.is_half)
@@ -203,6 +225,7 @@ def build_rvc_engine(args, sr: int, block: int, crossfade: int, extra: int) -> R
     backend = RVCBackend(
         pth_path=pth, block_ms=block_ms, index_path=index,
         index_rate=args.rvc_index_rate, key=args.rvc_key,
+        index_nprobe=getattr(args, "rvc_index_nprobe", DEFAULT_NPROBE),
         formant=getattr(args, "rvc_formant", 0.0),
         f0method=args.f0_method, rvc_root=root,
     )
@@ -211,7 +234,8 @@ def build_rvc_engine(args, sr: int, block: int, crossfade: int, extra: int) -> R
           f"| fp16 {backend.is_half} | {backend.device}")
     print(f"rvc params  : f0={args.f0_method} | key={args.rvc_key} "
           f"| index_rate={args.rvc_index_rate} "
-          f"| index={os.path.basename(index) if index else '(なし)'}")
+          f"| index={os.path.basename(index) if index else '(なし)'}"
+          f"{f' | nprobe={backend.index_nprobe}' if backend.index_nprobe else ''}")
 
     engine = RVCTorchEngine(
         backend.infer_fn, stream_sr=sr, model_sr=backend.tgt_sr,

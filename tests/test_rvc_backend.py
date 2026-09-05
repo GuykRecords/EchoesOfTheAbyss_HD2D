@@ -14,6 +14,7 @@ from rtvc.rvc_backend import (
     build_rvc_engine,
     find_first_model,
     to_zc_units,
+    widen_index_search,
 )
 
 
@@ -172,3 +173,40 @@ def test_argv_is_restored_even_when_the_body_raises():
         assert sys.argv == original
     finally:
         sys.argv = ["pytest"]
+
+
+# --------------------------------------------------------------------------
+# index search width
+# --------------------------------------------------------------------------
+
+
+class _FakeIVF:
+    """Stands in for a faiss IVF index: it has an nprobe, and that is the point."""
+
+    def __init__(self):
+        self.nprobe = 1
+
+
+class _FakeFlat:
+    """A flat index has no cells to probe, so no nprobe attribute either."""
+
+
+def test_the_index_search_is_widened_past_the_single_cell_faiss_defaults_to():
+    """nprobe=1 returns fewer than RVC's k=8, and RVC drops the whole block."""
+    index = _FakeIVF()
+    assert widen_index_search(index, 16) == 16
+    assert index.nprobe == 16
+
+
+def test_an_index_with_no_cells_to_probe_is_left_alone_rather_than_erroring():
+    assert widen_index_search(_FakeFlat(), 16) == 0
+
+
+def test_no_index_at_all_is_not_an_error():
+    assert widen_index_search(None, 16) == 0
+
+
+def test_zero_means_leave_faiss_where_it_is():
+    index = _FakeIVF()
+    assert widen_index_search(index, 0) == 0
+    assert index.nprobe == 1
