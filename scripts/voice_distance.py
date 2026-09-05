@@ -103,7 +103,7 @@ def voice_print(x: np.ndarray, sr: int) -> Tuple[np.ndarray, int]:
     平均から自身の平均を引いてある。**音量の差は距離に効かない。**
     """
     if sr != ANALYSIS_SR:
-        x = Resampler(sr, ANALYSIS_SR)(np.asarray(x, dtype=np.float32))
+        x = Resampler(sr, ANALYSIS_SR).process(np.asarray(x, dtype=np.float32))
     x = np.asarray(x, dtype=np.float64)
     frames = _frames(x, N_FFT, HOP)
     if frames.shape[0] == 0:

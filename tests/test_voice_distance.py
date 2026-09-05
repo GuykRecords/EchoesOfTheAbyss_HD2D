@@ -110,6 +110,21 @@ def test_silence_is_kept_out_of_the_average():
     assert drift < all_the_way / 10.0
 
 
+def test_a_rate_other_than_the_analysis_rate_is_resampled_not_refused():
+    """The reference material is 48k. Every real call takes this branch, and
+    a synthetic test at 16k never would."""
+    voice = _voiced(48000, 1.5, 120.0, (700, 1200, 2600), 0)
+    at_48k, frames = voice_print(voice, 48000)
+    assert frames > 0
+
+    at_16k, _ = voice_print(_voiced(ANALYSIS_SR, 1.5, 120.0, (700, 1200, 2600), 0),
+                            ANALYSIS_SR)
+    stranger, _ = voice_print(_voiced(ANALYSIS_SR, 1.5, 120.0, (450, 900, 2100), 0),
+                              ANALYSIS_SR)
+    # Same vowel at a different rate must land nearer than a different vowel.
+    assert print_distance(at_48k, at_16k) < print_distance(at_48k, stranger)
+
+
 def _write(path, x, sr=ANALYSIS_SR):
     wavfile.write(path, sr, (np.clip(x, -1, 1) * 32767).astype(np.int16))
 
