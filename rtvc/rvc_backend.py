@@ -233,6 +233,7 @@ def build_rvc_engine(args, sr: int, block: int, crossfade: int, extra: int) -> R
     print(f"rvc model   : {os.path.basename(pth)} | tgt_sr {backend.tgt_sr} "
           f"| fp16 {backend.is_half} | {backend.device}")
     print(f"rvc params  : f0={args.f0_method} | key={args.rvc_key} "
+          f"| formant={getattr(args, 'rvc_formant', 0.0)} "
           f"| index_rate={args.rvc_index_rate} "
           f"| index={os.path.basename(index) if index else '(なし)'}"
           f"{f' | nprobe={backend.index_nprobe}' if backend.index_nprobe else ''}")

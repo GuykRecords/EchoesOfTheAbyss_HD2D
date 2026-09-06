@@ -115,6 +115,32 @@ import 実測で `rtrvc.RVC` / `infer.hubert` / `SynthesizerTrnMs768NSFsid` / `R
 | ノイズゲート | off（RVC 既定） | 語尾を食うため |
 | f0 | rmvpe | |
 
+### 起動は `go-live.ps1`
+
+```powershell
+.\go-live.ps1                  # 自分の耳で聞く。Ctrl+C まで
+.\go-live.ps1 -Discord         # VB-CABLE へ送る（Discord / OBS）
+.\go-live.ps1 -Duration 30     # 30 秒で止める
+.\go-live.ps1 -Record take.wav # 生の入力も保存する（あとでオフライン比較できる）
+```
+
+venv の有効化・リポジトリへの移動・モデルの解決を全部やる。**新しい PowerShell を
+開いて venv を忘れる**のが、このプロジェクトで一番よくあるつまずきだった。
+
+> スクリプトの中身は**わざと ASCII だけ**にしてある。Windows PowerShell 5.1 は
+> `.ps1` をシステムの ANSI（ここでは cp932）として読むので、BOM 無し UTF-8 の
+> 日本語は文字化けし、パーサごと落ちる。このプロジェクトで実際に 1 度やった。
+
+### 実測（ライブ / 30.1s / 230 calls）
+
+```
+in-dev 22.00 | block 130.00 | infer 12.81 | xfade 50.00 | sola 10.00
+             | out-buf 11.90 | out-dev 24.67 | TOTAL 261.4 ms | RTF 0.099
+under 0  over 0  drop-in 0  drop-out 0
+```
+
+**目標（TOTAL < 300ms、RTF < 0.6、途切れ 0）をすべて満たしている。**
+
 ### オフライン実測（take3.wav / 19.89s / 153 blocks）
 
 ```
