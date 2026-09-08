@@ -99,6 +99,45 @@ import 実測で `rtrvc.RVC` / `infer.hubert` / `SynthesizerTrnMs768NSFsid` / `R
 
 ---
 
+## つまずき：`llvmlite.dll` が Windows にブロックされる
+
+```
+OSError: [WinError 4551] アプリケーション制御ポリシーによってこのファイルがブロックされました。
+OSError: Could not find/load shared object file 'llvmlite.dll'
+```
+
+**Smart App Control（SAC）が読み込みを拒否している。** rmvpe が
+librosa → numba → llvmlite と辿った先で止まる。**突然起きる**（SAC が評価モードから
+オンに切り替わる）ので、昨日まで動いていたのに今日落ちる、が普通にある。
+
+### 対処：llvmlite のバージョンを下げる
+
+```powershell
+pip install "numba==0.60.0" "llvmlite==0.43.0"
+```
+
+**これで通った。SAC は触っていない。**
+
+理屈: SAC は「署名の有無」ではなく**そのファイルに世間的な実績があるか**で判断している。
+torch も numpy も署名なしで動いているのが証拠。`llvmlite 0.49.0` の DLL は 120 MB と
+大きく新しく、実績が付いていなかった。**古くて広く出回っている 0.43.0 には実績がある。**
+
+`requirments_cu128_py312.txt` を入れ直すと 0.49 に戻る可能性がある。**戻ったらこの 1 行。**
+
+### やらなかったこと：SAC をオフにする
+
+rmvpe を取り戻す手段としては確実だが、**一度オフにすると再びオンにするには
+Windows の再インストールが必要**で、PC 全体の防御が一段下がる。
+バージョンを下げるだけで済むなら、そちらが先。
+
+### 応急処置：`--f0-method fcpe`
+
+llvmlite を必要とするのは rmvpe の経路だけ。fcpe なら通る。
+実測 `infer` 10.1ms（rmvpe は 13.4ms）と軽いが、**発音は rmvpe の方が良い**（聴き比べ済み）。
+実験を止めないための逃げ道として使える。
+
+---
+
 ## 現在地（2026-09-05）— 一通り動く。残る伸びしろは 2 つ
 
 **自分の声（正確には許諾を得た奥さんの声）のモデルで、変換が成立している。**
