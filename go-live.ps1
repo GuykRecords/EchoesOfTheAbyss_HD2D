@@ -23,12 +23,25 @@ param(
     # 0 means run until Ctrl+C.
     [double]$Duration = 0,
 
-    # Pitch +12 semitones and formant +1.5 were both chosen by listening.
-    # Key is what makes it another person at all; formant is the character.
+    # Pitch +12 makes it another person at all -- the single biggest knob.
+    # Formant went to 1.5 on a deliberately-spoken take and back to 0 on
+    # ordinary conversation, where it added warble. Ordinary conversation is
+    # what this is for.
     [int]$Key        = 12,
-    [double]$Formant = 1.5,
+    [double]$Formant = 0,
+
+    # Index off sounded the same on a careful take, so it was switched off.
+    # That was measured on the wrong material; with the faiss nprobe fixed it
+    # is cheap (about 2ms) and on by default now.
+    [double]$IndexRate = 0.75,
+
+    # Past context. Costs compute, not latency, and more of it measurably
+    # helped -- the best of the three window changes tried against RVC's own
+    # file conversion. 0 leaves the engine default (2500).
+    [double]$Extra = 5000,
 
     [string]$ModelGlob = "D:\Claude\Project\RVC\assets\weights\ena_e150_s*.pth",
+    [string]$IndexGlob = "D:\Claude\Project\RVC\assets\indices\*ena*.index",
     [string]$Venv      = "D:\Claude\Project\.venv-rvc",
 
     # Save the captured input, so the same take can be replayed through other
@@ -68,12 +81,21 @@ $cmd = @(
     "--in-device", $InDevice,
     "--out-device", $OutDevice
 )
+if ($IndexRate -gt 0) {
+    $index = (Get-ChildItem $IndexGlob -ErrorAction SilentlyContinue |
+              Sort-Object Name | Select-Object -Last 1).FullName
+    if (-not $index) { throw "index rate is $IndexRate but no index matched: $IndexGlob" }
+    $cmd += @("--rvc-index", $index, "--rvc-index-rate", $IndexRate)
+}
+
+if ($Extra -gt 0)    { $cmd += @("--extra-ms", $Extra) }
 if ($Duration -gt 0) { $cmd += @("--duration", $Duration) }
 if ($Record)         { $cmd += @("--record-in", $Record) }
 
 Write-Host "model : $(Split-Path $model -Leaf)"
 Write-Host "in    : $InDevice"
 Write-Host "out   : $OutDevice"
+Write-Host "note  : watch under/over/drop. They must stay at 0."
 Write-Host ""
 
 python @cmd
